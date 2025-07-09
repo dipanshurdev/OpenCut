@@ -69,14 +69,14 @@ export function TabBar() {
       />
       <div
         ref={scrollContainerRef}
-        className="h-12 bg-panel-accent px-3 flex justify-start items-center gap-5 overflow-x-auto scrollbar-x-hidden relative"
+        className="h-12 bg-panel-accent px-3 flex justify-start items-center gap-5 overflow-x-auto scrollbar-x-hidden relative transition duration-2000 ease-in"
       >
         {(Object.keys(tabs) as Tab[]).map((tabKey) => {
           const tab = tabs[tabKey];
           return (
             <div
               className={cn(
-                "flex flex-col gap-0.5 items-center cursor-pointer",
+                "flex flex-col gap-0.5 items-center cursor-pointer hover:text-white transition duration-500 ease hover:bg-panel-accent/50",
                 activeTab === tabKey ? "text-primary" : "text-muted-foreground"
               )}
               onClick={() => setActiveTab(tabKey)}
