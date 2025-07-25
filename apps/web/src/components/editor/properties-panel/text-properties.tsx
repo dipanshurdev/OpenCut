@@ -41,7 +41,6 @@ export function TextProperties({
           />
         </PropertyItemValue>
       </PropertyItem>
-
       <PropertyItem direction="column">
         <PropertyItemLabel>Font size</PropertyItemLabel>
         <PropertyItemValue>
