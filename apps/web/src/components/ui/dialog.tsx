@@ -4,8 +4,25 @@ import * as React from "react";
 import { Dialog as DialogPrimitive } from "radix-ui";
 import { X } from "lucide-react";
 import { cn } from "@/utils/ui";
+import { useOverlayOpenChange } from "./use-overlay-open-change";
 
-const Dialog = DialogPrimitive.Root;
+function Dialog({
+	open,
+	onOpenChange,
+	...props
+}: React.ComponentProps<typeof DialogPrimitive.Root>) {
+	const handleOpenChange = useOverlayOpenChange({
+		open,
+		onOpenChange,
+	});
+	return (
+		<DialogPrimitive.Root
+			open={open}
+			onOpenChange={handleOpenChange}
+			{...props}
+		/>
+	);
+}
 
 const DialogTrigger = DialogPrimitive.Trigger;
 
@@ -71,7 +88,7 @@ const DialogBody = ({
 	className,
 	...props
 }: React.HTMLAttributes<HTMLDivElement>) => (
-	<div className={cn("p-6 flex flex-col gap-6", className)} {...props} />
+	<div className={cn("p-6 flex flex-col gap-4", className)} {...props} />
 );
 DialogBody.displayName = "DialogBody";
 

@@ -1,4 +1,6 @@
 import type { EditorCore } from "@/core";
+import { TICKS_PER_SECOND } from "@/wasm";
+import { roundToFrame } from "opencut-wasm";
 
 export class PlaybackManager {
 	private isPlaying = false;
@@ -9,17 +11,34 @@ export class PlaybackManager {
 	private isScrubbing = false;
 	private listeners = new Set<() => void>();
 	private playbackTimer: number | null = null;
-	private lastUpdate = 0;
+	private playbackStartWallTime = 0;
+	private playbackStartTime = 0;
+	private timelineScopeBound = false;
 
 	constructor(private editor: EditorCore) {}
 
-	play(): void {
-		const duration = this.editor.timeline.getTotalDuration();
+	bindTimelineScope(): void {
+		if (this.timelineScopeBound) {
+			return;
+		}
 
-		if (duration > 0) {
-			if (this.currentTime >= duration) {
-				this.seek({ time: 0 });
-			}
+		const reconcile = () => {
+			this.reconcileTimelineScope();
+		};
+		this.editor.timeline.subscribe(reconcile);
+		this.editor.scenes.subscribe(reconcile);
+		this.timelineScopeBound = true;
+		this.reconcileTimelineScope();
+	}
+
+	play(): void {
+		const maxTime = this.editor.timeline.getTotalDuration();
+		if (maxTime <= 0) {
+			return;
+		}
+
+		if (this.currentTime >= maxTime) {
+			this.seek({ time: 0 });
 		}
 
 		this.isPlaying = true;
@@ -42,15 +61,13 @@ export class PlaybackManager {
 	}
 
 	seek({ time }: { time: number }): void {
-		const duration = this.editor.timeline.getTotalDuration();
-		this.currentTime = Math.max(0, Math.min(duration, time));
+		this.currentTime = this.clampTimeToTimeline(time);
+		if (this.isPlaying) {
+			this.playbackStartWallTime = performance.now();
+			this.playbackStartTime = this.currentTime;
+		}
 		this.notify();
-
-		window.dispatchEvent(
-			new CustomEvent("playback-seek", {
-				detail: { time: this.currentTime },
-			}),
-		);
+		this.dispatchSeekEvent(this.currentTime);
 	}
 
 	setVolume({ volume }: { volume: number }): void {
@@ -116,8 +133,33 @@ export class PlaybackManager {
 		return () => this.listeners.delete(listener);
 	}
 
+	private reconcileTimelineScope(): void {
+		const maxTime = this.editor.timeline.getTotalDuration();
+		const nextTime = this.clampTimeToTimeline(this.currentTime);
+		const shouldPause = this.isPlaying && nextTime >= maxTime;
+		const timeChanged = nextTime !== this.currentTime;
+
+		if (!timeChanged && !shouldPause) {
+			return;
+		}
+
+		if (shouldPause) {
+			this.isPlaying = false;
+			this.stopTimer();
+		}
+
+		this.currentTime = nextTime;
+		this.notify();
+
+		if (timeChanged) {
+			this.dispatchSeekEvent(this.currentTime);
+		}
+	}
+
 	private notify(): void {
-		this.listeners.forEach((fn) => fn());
+		this.listeners.forEach((fn) => {
+			fn();
+		});
 	}
 
 	private startTimer(): void {
@@ -125,7 +167,8 @@ export class PlaybackManager {
 			cancelAnimationFrame(this.playbackTimer);
 		}
 
-		this.lastUpdate = performance.now();
+		this.playbackStartWallTime = performance.now();
+		this.playbackStartTime = this.currentTime;
 		this.updateTime();
 	}
 
@@ -139,34 +182,55 @@ export class PlaybackManager {
 	private updateTime = (): void => {
 		if (!this.isPlaying) return;
 
-		const now = performance.now();
-		const delta = (now - this.lastUpdate) / 1000;
-		this.lastUpdate = now;
+		const fps = this.editor.project.getActive()?.settings.fps;
+		const elapsedSeconds =
+			(performance.now() - this.playbackStartWallTime) / 1000;
+		const rawTime =
+			this.playbackStartTime + Math.round(elapsedSeconds * TICKS_PER_SECOND);
+		const newTime = fps
+			? (roundToFrame({ time: rawTime, rate: fps }) ?? rawTime)
+			: rawTime;
+		const maxTime = this.editor.timeline.getTotalDuration();
 
-		const newTime = this.currentTime + delta;
-		const duration = this.editor.timeline.getTotalDuration();
-
-		if (duration > 0 && newTime >= duration) {
+		if (newTime >= maxTime) {
 			this.pause();
-			this.currentTime = duration;
+			this.currentTime = maxTime;
 			this.notify();
-
-			window.dispatchEvent(
-				new CustomEvent("playback-seek", {
-					detail: { time: duration },
-				}),
-			);
-		} else {
-			this.currentTime = newTime;
-			this.notify();
-
-			window.dispatchEvent(
-				new CustomEvent("playback-update", {
-					detail: { time: newTime },
-				}),
-			);
+			this.dispatchSeekEvent(maxTime);
+			return;
 		}
 
+		this.currentTime = newTime;
+		this.dispatchUpdateEvent(newTime);
 		this.playbackTimer = requestAnimationFrame(this.updateTime);
 	};
+
+	private clampTimeToTimeline(time: number): number {
+		const maxTime = this.editor.timeline.getTotalDuration();
+		return Math.max(0, Math.min(maxTime, time));
+	}
+
+	private dispatchSeekEvent(time: number): void {
+		if (typeof window === "undefined") {
+			return;
+		}
+
+		window.dispatchEvent(
+			new CustomEvent("playback-seek", {
+				detail: { time },
+			}),
+		);
+	}
+
+	private dispatchUpdateEvent(time: number): void {
+		if (typeof window === "undefined") {
+			return;
+		}
+
+		window.dispatchEvent(
+			new CustomEvent("playback-update", {
+				detail: { time },
+			}),
+		);
+	}
 }

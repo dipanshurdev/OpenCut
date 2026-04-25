@@ -6,20 +6,22 @@ import { useRouter } from "next/navigation";
 import type { KeyboardEvent, MouseEvent } from "react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { MigrationDialog } from "@/components/editor/dialogs/migration-dialog";
+import type { EditorCore } from "@/core";
+import { MigrationDialog } from "@/project/components/migration-dialog";
+import { StoragePersistenceDialog } from "@/services/storage/components/storage-persistence-dialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useEditor } from "@/hooks/use-editor";
+import { useEditor } from "@/editor/use-editor";
 import { useProjectsStore } from "./store";
 import type {
 	TProjectMetadata,
 	TProjectSortKey,
 	TProjectSortOption,
-} from "@/types/project";
-import { formatTimeCode } from "@/lib/time";
+} from "@/project/types";
+import { formatTimecode, mediaTimeToSeconds } from "opencut-wasm";
 import { formatDate } from "@/utils/date";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -44,8 +46,15 @@ import {
 	ArrowDown02Icon,
 	InformationCircleIcon,
 } from "@hugeicons/core-free-icons";
-import { OcVideoIcon } from "@opencut/ui/icons";
+import { OcVideoIcon } from "@/components/icons";
 import { Label } from "@/components/ui/label";
+import {
+	ContextMenu,
+	ContextMenuContent,
+	ContextMenuItem,
+	ContextMenuSeparator,
+	ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import {
 	DropdownMenu,
 	DropdownMenuCheckboxItem,
@@ -53,11 +62,11 @@ import {
 	DropdownMenuItem,
 	DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { DeleteProjectDialog } from "@/components/editor/dialogs/delete-project-dialog";
-import { ProjectInfoDialog } from "@/components/editor/dialogs/project-info-dialog";
-import { RenameProjectDialog } from "@/components/editor/dialogs/rename-project-dialog";
+import { DeleteProjectDialog } from "@/project/components/delete-project-dialog";
+import { ProjectInfoDialog } from "@/project/components/project-info-dialog";
+import { RenameProjectDialog } from "@/project/components/rename-project-dialog";
 import { cn } from "@/utils/ui";
-
+import { ChangelogNotification } from "@/changelog/components/changelog-notification";
 const formatProjectDuration = ({
 	duration,
 }: {
@@ -67,8 +76,9 @@ const formatProjectDuration = ({
 		return null;
 	}
 
-	const format = duration >= 3600 ? "HH:MM:SS" : "MM:SS";
-	return formatTimeCode({ timeInSeconds: duration, format });
+	const durationSeconds = mediaTimeToSeconds({ time: duration });
+	const format = durationSeconds >= 3600 ? "HH:MM:SS" : "MM:SS";
+	return formatTimecode({ time: duration, format }) ?? "";
 };
 
 const VIEW_MODE_OPTIONS = [
@@ -79,6 +89,13 @@ const VIEW_MODE_OPTIONS = [
 export default function ProjectsPage() {
 	const { searchQuery, sortKey, sortOrder, viewMode } = useProjectsStore();
 	const editor = useEditor();
+	const sortOption: TProjectSortOption = `${sortKey}-${sortOrder}`;
+
+	const isLoading = useEditor((e) => e.project.getIsLoading());
+	const isInitialized = useEditor((e) => e.project.getIsInitialized());
+	const projectsToDisplay = useEditor((e) =>
+		e.project.getFilteredAndSortedProjects({ searchQuery, sortOption }),
+	);
 
 	useEffect(() => {
 		if (!editor.project.getIsInitialized()) {
@@ -86,18 +103,11 @@ export default function ProjectsPage() {
 		}
 	}, [editor.project]);
 
-	const sortOption: TProjectSortOption = `${sortKey}-${sortOrder}`;
-	const projectsToDisplay = editor.project.getFilteredAndSortedProjects({
-		searchQuery,
-		sortOption,
-	});
-
-	const isLoading = editor.project.getIsLoading();
-	const isInitialized = editor.project.getIsInitialized();
-
 	return (
 		<div className="bg-background min-h-screen">
 			<MigrationDialog />
+			<StoragePersistenceDialog />
+			<ChangelogNotification />
 			<ProjectsHeader />
 			<ProjectsToolbar projectIds={projectsToDisplay.map((p) => p.id)} />
 			<main className="mx-auto px-4 pt-2 pb-6 flex flex-col gap-4">
@@ -245,7 +255,6 @@ function ProjectsToolbar({ projectIds }: { projectIds: string[] }) {
 					</Button>
 				</SortDropdown>
 				<Button
-					type="button"
 					variant="text"
 					className="text-muted-foreground"
 					onClick={() =>
@@ -353,7 +362,7 @@ async function deleteProjects({
 	editor,
 	ids,
 }: {
-	editor: ReturnType<typeof useEditor>;
+	editor: EditorCore;
 	ids: string[];
 }) {
 	await editor.project.deleteProjects({ ids });
@@ -363,7 +372,7 @@ async function duplicateProjects({
 	editor,
 	ids,
 }: {
-	editor: ReturnType<typeof useEditor>;
+	editor: EditorCore;
 	ids: string[];
 }) {
 	await editor.project.duplicateProjects({ ids });
@@ -374,7 +383,7 @@ async function renameProject({
 	id,
 	name,
 }: {
-	editor: ReturnType<typeof useEditor>;
+	editor: EditorCore;
 	id: string;
 	name: string;
 }) {
@@ -535,9 +544,24 @@ function ProjectItem({
 	const isSelected = selectedProjectIdSet.has(project.id);
 	const selectedProjectCount = selectedProjectIds.length;
 	const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+	const [isRenameDialogOpen, setIsRenameDialogOpen] = useState(false);
+	const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
+	const [isInfoDialogOpen, setIsInfoDialogOpen] = useState(false);
+	const editor = useEditor();
 	const durationLabel = formatProjectDuration({ duration: project.duration });
 	const isMultiSelect = selectedProjectCount > 1;
 	const isGridView = viewMode === "grid";
+
+	const handleRename = () => setIsRenameDialogOpen(true);
+	const handleDuplicate = async () => {
+		await duplicateProjects({ editor, ids: [project.id] });
+	};
+	const handleDeleteClick = () => setIsDeleteDialogOpen(true);
+	const handleInfoClick = () => setIsInfoDialogOpen(true);
+	const handleDeleteConfirm = async () => {
+		await deleteProjects({ editor, ids: [project.id] });
+		setIsDeleteDialogOpen(false);
+	};
 
 	const handleCheckboxChange = ({
 		checked,
@@ -648,173 +672,67 @@ function ProjectItem({
 				<ProjectMenu
 					isOpen={isDropdownOpen}
 					onOpenChange={setIsDropdownOpen}
-					project={project}
 					variant="list"
+					onRenameClick={handleRename}
+					onDuplicateClick={handleDuplicate}
+					onDeleteClick={handleDeleteClick}
+					onInfoClick={handleInfoClick}
 				/>
 			)}
 		</div>
 	);
 
-	const cardContent = isGridView ? gridContent : listContent;
-
-	if (!isGridView) {
-		return <div className="group relative">{listContent}</div>;
-	}
-
-	return (
-		<div className="group relative">
-			<Link href={`/editor/${project.id}`} className="block">
-				{cardContent}
-			</Link>
-
-			{isGridView && (
-				<>
-					<Checkbox
-						checked={isSelected}
-						onMouseDown={(event) => event.preventDefault()}
-						onClick={(event) => {
-							handleCheckboxChange({
-								checked: !isSelected,
-								shiftKey: event.shiftKey,
-							});
-						}}
-						onCheckedChange={() => {}}
-						className={`absolute z-10 size-5 top-3 left-3 ${
-							isSelected || isDropdownOpen
-								? "opacity-100"
-								: "opacity-0 group-hover:opacity-100"
-						}`}
-					/>
-
-					{!isMultiSelect && (
-						<ProjectMenu
-							isOpen={isDropdownOpen}
-							onOpenChange={setIsDropdownOpen}
-							project={project}
-						/>
-					)}
-				</>
-			)}
-		</div>
-	);
-}
-
-function ProjectMenu({
-	isOpen,
-	onOpenChange,
-	project,
-	variant = "grid",
-}: {
-	isOpen: boolean;
-	onOpenChange: (open: boolean) => void;
-	project: TProjectMetadata;
-	variant?: "grid" | "list";
-}) {
-	const editor = useEditor();
-	const [isRenameDialogOpen, setIsRenameDialogOpen] = useState(false);
-	const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
-	const [isInfoDialogOpen, setIsInfoDialogOpen] = useState(false);
-
-	const handleMenuClick = ({
-		event,
-	}: {
-		event: MouseEvent<HTMLButtonElement>;
-	}) => {
-		event.preventDefault();
-		event.stopPropagation();
-	};
-
-	const handleMenuKeyDown = ({
-		event,
-	}: {
-		event: KeyboardEvent<HTMLButtonElement>;
-	}) => {
-		if (event.key !== "Enter" && event.key !== " ") {
-			return;
-		}
-		event.preventDefault();
-		event.stopPropagation();
-	};
-
-	const handleRename = () => {
-		setIsRenameDialogOpen(true);
-		onOpenChange(false);
-	};
-
-	const handleDuplicate = async () => {
-		await duplicateProjects({ editor, ids: [project.id] });
-		onOpenChange(false);
-	};
-
-	const handleDeleteClick = () => {
-		setIsDeleteDialogOpen(true);
-		onOpenChange(false);
-	};
-
-	const handleDeleteConfirm = async () => {
-		await deleteProjects({ editor, ids: [project.id] });
-		setIsDeleteDialogOpen(false);
-	};
-
-	const handleInfoClick = () => {
-		setIsInfoDialogOpen(true);
-		onOpenChange(false);
-	};
-
-	const isGrid = variant === "grid";
-
 	return (
 		<>
-			<DropdownMenu open={isOpen} onOpenChange={onOpenChange}>
-				<DropdownMenuTrigger asChild>
-					<Button
-						type="button"
-						variant="background"
-						className={
-							isGrid
-								? `absolute z-10 top-3 right-3 ${isOpen ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`
-								: "!bg-transparent !shadow-none"
-						}
-						size="icon"
-						aria-label="Project menu"
-						onClick={(event) =>
-							handleMenuClick({
-								event: event as unknown as MouseEvent<HTMLButtonElement>,
-							})
-						}
-						onMouseDown={(event) => event.stopPropagation()}
-						onKeyDown={(event) =>
-							handleMenuKeyDown({
-								event: event as unknown as KeyboardEvent<HTMLButtonElement>,
-							})
-						}
-					>
-						<HugeiconsIcon
-							icon={MoreHorizontalIcon}
-							className="text-foreground"
-							aria-hidden="true"
-						/>
-					</Button>
-				</DropdownMenuTrigger>
-				<DropdownMenuContent className="w-48" align="end">
-					<DropdownMenuItem onClick={handleRename}>
-						<HugeiconsIcon icon={Edit03Icon} />
-						Rename
-					</DropdownMenuItem>
-					<DropdownMenuItem onClick={handleDuplicate}>
-						<HugeiconsIcon icon={Copy01Icon} />
-						Duplicate
-					</DropdownMenuItem>
-					<DropdownMenuItem onClick={handleInfoClick}>
-						<HugeiconsIcon icon={InformationCircleIcon} />
-						Info
-					</DropdownMenuItem>
-					<DropdownMenuItem variant="destructive" onClick={handleDeleteClick}>
-						<HugeiconsIcon icon={Delete02Icon} />
-						Delete
-					</DropdownMenuItem>
-				</DropdownMenuContent>
-			</DropdownMenu>
+			<ContextMenu>
+				<ContextMenuTrigger asChild>
+					<div className="group relative">
+						{isGridView ? (
+							<>
+								<Link href={`/editor/${project.id}`} className="block">
+									{gridContent}
+								</Link>
+
+								<Checkbox
+									checked={isSelected}
+									onMouseDown={(event) => event.preventDefault()}
+									onClick={(event) => {
+										handleCheckboxChange({
+											checked: !isSelected,
+											shiftKey: event.shiftKey,
+										});
+									}}
+									onCheckedChange={() => {}}
+									className={`absolute z-10 size-5 top-3 left-3 ${
+										isSelected || isDropdownOpen
+											? "opacity-100"
+											: "opacity-0 group-hover:opacity-100"
+									}`}
+								/>
+
+								{!isMultiSelect && (
+									<ProjectMenu
+										isOpen={isDropdownOpen}
+										onOpenChange={setIsDropdownOpen}
+										onRenameClick={handleRename}
+										onDuplicateClick={handleDuplicate}
+										onDeleteClick={handleDeleteClick}
+										onInfoClick={handleInfoClick}
+									/>
+								)}
+							</>
+						) : (
+							listContent
+						)}
+					</div>
+				</ContextMenuTrigger>
+				<ProjectContextMenuContent
+					onRenameClick={handleRename}
+					onDuplicateClick={handleDuplicate}
+					onDeleteClick={handleDeleteClick}
+					onInfoClick={handleInfoClick}
+				/>
+			</ContextMenu>
 
 			<RenameProjectDialog
 				isOpen={isRenameDialogOpen}
@@ -839,6 +757,162 @@ function ProjectMenu({
 				project={project}
 			/>
 		</>
+	);
+}
+
+function ProjectContextMenuContent({
+	onRenameClick,
+	onDuplicateClick,
+	onDeleteClick,
+	onInfoClick,
+}: {
+	onRenameClick: () => void;
+	onDuplicateClick: () => void;
+	onDeleteClick: () => void;
+	onInfoClick: () => void;
+}) {
+	return (
+		<ContextMenuContent>
+			<ContextMenuItem
+				icon={<HugeiconsIcon icon={Edit03Icon} />}
+				onClick={onRenameClick}
+			>
+				Rename
+			</ContextMenuItem>
+			<ContextMenuItem
+				icon={<HugeiconsIcon icon={Copy01Icon} />}
+				onClick={onDuplicateClick}
+			>
+				Duplicate
+			</ContextMenuItem>
+			<ContextMenuItem
+				icon={<HugeiconsIcon icon={InformationCircleIcon} />}
+				onClick={onInfoClick}
+			>
+				Info
+			</ContextMenuItem>
+			<ContextMenuSeparator />
+			<ContextMenuItem
+				variant="destructive"
+				icon={<HugeiconsIcon icon={Delete02Icon} />}
+				onClick={onDeleteClick}
+			>
+				Delete
+			</ContextMenuItem>
+		</ContextMenuContent>
+	);
+}
+
+function ProjectMenu({
+	isOpen,
+	onOpenChange,
+	variant = "grid",
+	onRenameClick,
+	onDuplicateClick,
+	onDeleteClick,
+	onInfoClick,
+}: {
+	isOpen: boolean;
+	onOpenChange: (open: boolean) => void;
+	variant?: "grid" | "list";
+	onRenameClick: () => void;
+	onDuplicateClick: () => void;
+	onDeleteClick: () => void;
+	onInfoClick: () => void;
+}) {
+	const handleMenuClick = ({
+		event,
+	}: {
+		event: MouseEvent<HTMLButtonElement>;
+	}) => {
+		event.preventDefault();
+		event.stopPropagation();
+	};
+
+	const handleMenuKeyDown = ({
+		event,
+	}: {
+		event: KeyboardEvent<HTMLButtonElement>;
+	}) => {
+		if (event.key !== "Enter" && event.key !== " ") {
+			return;
+		}
+		event.preventDefault();
+		event.stopPropagation();
+	};
+
+	const handleRename = () => {
+		onRenameClick();
+		onOpenChange(false);
+	};
+
+	const handleDuplicate = () => {
+		onDuplicateClick();
+		onOpenChange(false);
+	};
+
+	const handleDeleteClick = () => {
+		onDeleteClick();
+		onOpenChange(false);
+	};
+
+	const handleInfoClick = () => {
+		onInfoClick();
+		onOpenChange(false);
+	};
+
+	const isGrid = variant === "grid";
+
+	return (
+		<DropdownMenu open={isOpen} onOpenChange={onOpenChange}>
+			<DropdownMenuTrigger asChild>
+				<Button
+					variant="background"
+					className={
+						isGrid
+							? `absolute z-10 top-3 right-3 ${isOpen ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`
+							: "!bg-transparent !shadow-none"
+					}
+					size="icon"
+					aria-label="Project menu"
+					onClick={(event) =>
+						handleMenuClick({
+							event: event as unknown as MouseEvent<HTMLButtonElement>,
+						})
+					}
+					onMouseDown={(event) => event.stopPropagation()}
+					onKeyDown={(event) =>
+						handleMenuKeyDown({
+							event: event as unknown as KeyboardEvent<HTMLButtonElement>,
+						})
+					}
+				>
+					<HugeiconsIcon
+						icon={MoreHorizontalIcon}
+						className="text-foreground"
+						aria-hidden="true"
+					/>
+				</Button>
+			</DropdownMenuTrigger>
+			<DropdownMenuContent className="w-48" align="end">
+				<DropdownMenuItem onClick={handleRename}>
+					<HugeiconsIcon icon={Edit03Icon} />
+					Rename
+				</DropdownMenuItem>
+				<DropdownMenuItem onClick={handleDuplicate}>
+					<HugeiconsIcon icon={Copy01Icon} />
+					Duplicate
+				</DropdownMenuItem>
+				<DropdownMenuItem onClick={handleInfoClick}>
+					<HugeiconsIcon icon={InformationCircleIcon} />
+					Info
+				</DropdownMenuItem>
+				<DropdownMenuItem variant="destructive" onClick={handleDeleteClick}>
+					<HugeiconsIcon icon={Delete02Icon} />
+					Delete
+				</DropdownMenuItem>
+			</DropdownMenuContent>
+		</DropdownMenu>
 	);
 }
 

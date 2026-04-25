@@ -2,7 +2,8 @@ import Link from "next/link";
 import { RiDiscordFill, RiTwitterXLine } from "react-icons/ri";
 import { FaGithub } from "react-icons/fa6";
 import Image from "next/image";
-import { DEFAULT_LOGO_URL, SOCIAL_LINKS } from "@/constants/site-constants";
+import { DEFAULT_LOGO_URL } from "@/site/brand";
+import { SOCIAL_LINKS } from "@/site/social";
 import { capitalizeFirstLetter } from "@/utils/string";
 
 type Category = "resources" | "company";
@@ -17,6 +18,7 @@ type CategoryLinks = Record<Category, FooterLink[]>;
 const links: CategoryLinks = {
 	resources: [
 		{ label: "Roadmap", href: "/roadmap" },
+		{ label: "Changelog", href: "/changelog" },
 		{ label: "Blog", href: "/blog" },
 		{ label: "Privacy", href: "/privacy" },
 		{ label: "Terms of use", href: "/terms" },
@@ -24,7 +26,7 @@ const links: CategoryLinks = {
 	company: [
 		{ label: "Contributors", href: "/contributors" },
 		{ label: "Sponsors", href: "/sponsors" },
-		{ label: "Branding", href: "/branding" },
+		{ label: "Brand", href: "/brand" },
 		{ label: "About", href: `${SOCIAL_LINKS.github}/blob/main/README.md` },
 	],
 };

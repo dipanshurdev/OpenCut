@@ -4,10 +4,26 @@ import * as React from "react";
 import { DropdownMenu as DropdownMenuPrimitive } from "radix-ui";
 import { Check, ChevronRight, Circle } from "lucide-react";
 import { cva, type VariantProps } from "class-variance-authority";
-
 import { cn } from "@/utils/ui";
+import { useOverlayOpenChange } from "./use-overlay-open-change";
 
-const DropdownMenu = DropdownMenuPrimitive.Root;
+function DropdownMenu({
+	open,
+	onOpenChange,
+	...props
+}: React.ComponentProps<typeof DropdownMenuPrimitive.Root>) {
+	const handleOpenChange = useOverlayOpenChange({
+		open,
+		onOpenChange,
+	});
+	return (
+		<DropdownMenuPrimitive.Root
+			open={open}
+			onOpenChange={handleOpenChange}
+			{...props}
+		/>
+	);
+}
 
 const DropdownMenuTrigger = DropdownMenuPrimitive.Trigger;
 
@@ -20,7 +36,7 @@ const DropdownMenuSub = DropdownMenuPrimitive.Sub;
 const DropdownMenuRadioGroup = DropdownMenuPrimitive.RadioGroup;
 
 const dropdownMenuItemVariants = cva(
-	"relative flex cursor-pointer select-none items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-foreground/85 outline-hidden data-[highlighted]:bg-popover-hover data-disabled:pointer-events-none data-disabled:opacity-50 [&>svg]:size-4 [&>svg]:shrink-0",
+	"relative flex cursor-pointer select-none items-center gap-2 rounded-sm px-2.5 py-1.5 text-sm text-foreground/85 outline-hidden data-[highlighted]:bg-popover-hover data-disabled:pointer-events-none data-disabled:opacity-50 [&>svg]:size-4 [&>svg]:shrink-0",
 	{
 		variants: {
 			variant: {
@@ -66,7 +82,7 @@ const DropdownMenuSubContent = React.forwardRef<
 	<DropdownMenuPrimitive.SubContent
 		ref={ref}
 		className={cn(
-			"bg-popover text-popover-foreground z-50 min-w-32 overflow-hidden rounded-2xl border p-2 shadow-lg",
+			"group/menu bg-popover text-popover-foreground z-50 min-w-32 overflow-hidden rounded-md border p-1 shadow-lg",
 			className,
 		)}
 		{...props}
@@ -88,7 +104,7 @@ const DropdownMenuContent = React.forwardRef<
 				e.preventDefault();
 			}}
 			className={cn(
-				"bg-popover text-popover-foreground z-50 min-w-32 overflow-hidden rounded-lg border p-2 shadow-lg",
+				"group/menu bg-popover text-popover-foreground z-50 min-w-32 overflow-hidden rounded-md border p-1 shadow-lg",
 				className,
 			)}
 			{...props}
@@ -101,19 +117,61 @@ const DropdownMenuItem = React.forwardRef<
 	React.ElementRef<typeof DropdownMenuPrimitive.Item>,
 	React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Item> & {
 		inset?: boolean;
+		icon?: React.ReactNode;
 		variant?: VariantProps<typeof dropdownMenuItemVariants>["variant"];
 	}
->(({ className, inset, variant = "default", ...props }, ref) => (
-	<DropdownMenuPrimitive.Item
-		ref={ref}
-		className={cn(
-			dropdownMenuItemVariants({ variant }),
-			inset && "pl-8",
+>(
+	(
+		{
 			className,
-		)}
-		{...props}
-	/>
-));
+			inset,
+			icon,
+			variant = "default",
+			children,
+			asChild,
+			...props
+		},
+		ref,
+	) => {
+		const iconSlot = (
+			<span className="hidden size-4 shrink-0 items-center justify-center group-has-data-has-icon/menu:flex">
+				{icon}
+			</span>
+		);
+
+		const renderedChildren =
+			asChild && React.isValidElement(children) ? (
+				React.cloneElement(
+					children as React.ReactElement<{ children?: React.ReactNode }>,
+					{},
+					iconSlot,
+					(children as React.ReactElement<{ children?: React.ReactNode }>).props
+						.children,
+				)
+			) : (
+				<>
+					{iconSlot}
+					{children}
+				</>
+			);
+
+		return (
+			<DropdownMenuPrimitive.Item
+				ref={ref}
+				asChild={asChild}
+				data-has-icon={icon ? "" : undefined}
+				className={cn(
+					dropdownMenuItemVariants({ variant }),
+					inset && "pl-8",
+					className,
+				)}
+				{...props}
+			>
+				{renderedChildren}
+			</DropdownMenuPrimitive.Item>
+		);
+	},
+);
 DropdownMenuItem.displayName = DropdownMenuPrimitive.Item.displayName;
 
 const DropdownMenuCheckboxItem = React.forwardRef<
@@ -181,7 +239,7 @@ const DropdownMenuLabel = React.forwardRef<
 	<DropdownMenuPrimitive.Label
 		ref={ref}
 		className={cn(
-			"px-3 pb-2 pt-1 text-[11px] font-bold uppercase tracking-wider text-muted-foreground",
+			"px-2 pb-1 pt-0.5 text-[11px] font-bold uppercase tracking-wider text-muted-foreground",
 			inset && "pl-8",
 			className,
 		)}
@@ -196,7 +254,7 @@ const DropdownMenuSeparator = React.forwardRef<
 >(({ className, ...props }, ref) => (
 	<DropdownMenuPrimitive.Separator
 		ref={ref}
-		className={cn("bg-border/60 mx-1 my-2 h-px", className)}
+		className={cn("bg-border mx-1 my-1.5 h-px", className)}
 		{...props}
 	/>
 ));

@@ -1,20 +1,50 @@
-import type { TProject, TProjectMetadata } from "@/types/project";
-import { getProjectDurationFromScenes } from "@/lib/scenes";
-import type { MediaAsset } from "@/types/assets";
+import type { TProject, TProjectMetadata } from "@/project/types";
+import { getProjectDurationFromScenes } from "@/timeline/scenes";
+import type { MediaAsset } from "@/media/types";
 import { IndexedDBAdapter } from "./indexeddb-adapter";
 import { OPFSAdapter } from "./opfs-adapter";
+import {
+	type StorageCapacityCheckResult,
+	StorageQuotaExceededError,
+	evaluateStorageCapacity,
+	isStorageQuotaExceededError,
+	readStorageQuotaStatus,
+} from "./quota";
 import type {
 	MediaAssetData,
 	StorageConfig,
 	SerializedProject,
 	SerializedScene,
 } from "./types";
-import type { SavedSoundsData, SavedSound, SoundEffect } from "@/types/sounds";
+import type { SavedSoundsData, SavedSound, SoundEffect } from "@/sounds/types";
 import {
 	migrations,
 	runStorageMigrations,
 } from "@/services/storage/migrations";
-import type { TimelineTrack, TScene } from "@/types/timeline";
+import type { Bookmark, SceneTracks, TScene } from "@/timeline";
+
+function normalizeBookmarks({ raw }: { raw: unknown }): Bookmark[] {
+	if (!Array.isArray(raw)) return [];
+	return raw
+		.map((item): Bookmark | null => {
+			if (typeof item === "number") return { time: item };
+			const obj = item as Record<string, unknown>;
+			if (
+				typeof obj !== "object" ||
+				obj === null ||
+				typeof obj.time !== "number"
+			) {
+				return null;
+			}
+			return {
+				time: obj.time,
+				...(typeof obj.note === "string" && { note: obj.note }),
+				...(typeof obj.color === "string" && { color: obj.color }),
+				...(typeof obj.duration === "number" && { duration: obj.duration }),
+			};
+		})
+		.filter((b): b is Bookmark => b !== null);
+}
 
 class StorageService {
 	private projectsAdapter: IndexedDBAdapter<SerializedProject>;
@@ -67,21 +97,33 @@ class StorageService {
 		return { mediaMetadataAdapter, mediaAssetsAdapter };
 	}
 
-	private stripAudioBuffers({
-		tracks,
+	async canStoreFile({
+		size,
 	}: {
-		tracks: TimelineTrack[];
-	}): TimelineTrack[] {
-		return tracks.map((track) => {
-			if (track.type !== "audio") return track;
-			return {
+		size: number;
+	}): Promise<StorageCapacityCheckResult> {
+		const quotaStatus = await readStorageQuotaStatus();
+		return evaluateStorageCapacity({
+			requiredBytes: size,
+			quotaStatus,
+		});
+	}
+
+	isQuotaExceededError({ error }: { error: unknown }): boolean {
+		return isStorageQuotaExceededError({ error });
+	}
+
+	private stripAudioBuffers({ tracks }: { tracks: SceneTracks }): SceneTracks {
+		return {
+			...tracks,
+			audio: tracks.audio.map((track) => ({
 				...track,
 				elements: track.elements.map((element) => {
 					const { buffer: _buffer, ...rest } = element;
 					return rest;
 				}),
-			};
-		});
+			})),
+		};
 	}
 
 	async saveProject({ project }: { project: TProject }): Promise<void> {
@@ -127,17 +169,26 @@ class StorageService {
 
 		if (!serializedProject) return null;
 
+		if (
+			typeof serializedProject !== "object" ||
+			serializedProject === null ||
+			typeof serializedProject.metadata !== "object" ||
+			serializedProject.metadata === null
+		) {
+			console.warn(
+				"[storage] Skipping malformed project entry (missing metadata):",
+				{ id, entry: serializedProject },
+			);
+			return null;
+		}
+
 		const scenes =
 			serializedProject.scenes?.map((scene) => ({
 				id: scene.id,
 				name: scene.name,
 				isMain: scene.isMain,
-				tracks: (scene.tracks ?? []).map((track) =>
-					track.type === "video"
-						? { ...track, isMain: track.isMain ?? false } // legacy: isMain was optional
-						: track,
-				),
-				bookmarks: scene.bookmarks ?? [],
+				tracks: scene.tracks,
+				bookmarks: normalizeBookmarks({ raw: scene.bookmarks }),
 				createdAt: new Date(scene.createdAt),
 				updatedAt: new Date(scene.updatedAt),
 			})) ?? [];
@@ -183,18 +234,34 @@ class StorageService {
 		await this.ensureMigrations();
 		const serializedProjects = await this.projectsAdapter.getAll();
 
-		const metadata = serializedProjects.map((serializedProject) => ({
-			id: serializedProject.metadata.id,
-			name: serializedProject.metadata.name,
-			thumbnail: serializedProject.metadata.thumbnail,
-			duration:
-				serializedProject.metadata.duration ??
-				getProjectDurationFromScenes({
-					scenes: (serializedProject.scenes ?? []) as unknown as TScene[],
-				}),
-			createdAt: new Date(serializedProject.metadata.createdAt),
-			updatedAt: new Date(serializedProject.metadata.updatedAt),
-		}));
+		const metadata: TProjectMetadata[] = [];
+		for (const serializedProject of serializedProjects) {
+			if (
+				typeof serializedProject !== "object" ||
+				serializedProject === null ||
+				typeof serializedProject.metadata !== "object" ||
+				serializedProject.metadata === null
+			) {
+				console.warn(
+					"[storage] Skipping malformed project entry (missing metadata):",
+					serializedProject,
+				);
+				continue;
+			}
+
+			metadata.push({
+				id: serializedProject.metadata.id,
+				name: serializedProject.metadata.name,
+				thumbnail: serializedProject.metadata.thumbnail,
+				duration:
+					serializedProject.metadata.duration ??
+					getProjectDurationFromScenes({
+						scenes: (serializedProject.scenes ?? []) as unknown as TScene[],
+					}),
+				createdAt: new Date(serializedProject.metadata.createdAt),
+				updatedAt: new Date(serializedProject.metadata.updatedAt),
+			});
+		}
 
 		return metadata.sort(
 			(a, b) => b.updatedAt.getTime() - a.updatedAt.getTime(),
@@ -215,8 +282,6 @@ class StorageService {
 		const { mediaMetadataAdapter, mediaAssetsAdapter } =
 			this.getProjectMediaAdapters({ projectId });
 
-		await mediaAssetsAdapter.set(mediaAsset.id, mediaAsset.file);
-
 		const metadata: MediaAssetData = {
 			id: mediaAsset.id,
 			name: mediaAsset.name,
@@ -230,7 +295,24 @@ class StorageService {
 			ephemeral: mediaAsset.ephemeral,
 		};
 
-		await mediaMetadataAdapter.set(mediaAsset.id, metadata);
+		try {
+			await mediaAssetsAdapter.set(mediaAsset.id, mediaAsset.file);
+			await mediaMetadataAdapter.set(mediaAsset.id, metadata);
+		} catch (error) {
+			try {
+				await mediaAssetsAdapter.remove(mediaAsset.id);
+			} catch {
+				// Ignore cleanup failures so the original storage error is preserved.
+			}
+
+			if (this.isQuotaExceededError({ error })) {
+				throw new StorageQuotaExceededError({
+					requiredBytes: mediaAsset.file.size,
+				});
+			}
+
+			throw error;
+		}
 	}
 
 	async loadMediaAsset({

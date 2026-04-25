@@ -4,8 +4,8 @@ import { notFound } from "next/navigation";
 import { BasePage } from "@/app/base-page";
 import Prose from "@/components/ui/prose";
 import { Separator } from "@/components/ui/separator";
-import { getPosts, getSinglePost, processHtmlContent } from "@/lib/blog/query";
-import type { Author, Post } from "@/types/blog";
+import { getPosts, getSinglePost, processHtmlContent } from "@/blog/query";
+import type { Author, Post } from "@/blog/types";
 
 type PageProps = {
 	params: Promise<{ slug: string }>;
@@ -120,7 +120,9 @@ function PostMeta({ date, publishedAt }: { date: string; publishedAt: Date }) {
 
 function PostTitle({ title }: { title: string }) {
 	return (
-		<h1 className="text-5xl font-bold tracking-tight md:text-4xl text-center">{title}</h1>
+		<h1 className="text-5xl font-bold tracking-tight md:text-4xl text-center">
+			{title}
+		</h1>
 	);
 }
 

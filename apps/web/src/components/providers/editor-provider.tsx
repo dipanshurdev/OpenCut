@@ -3,12 +3,17 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2 } from "lucide-react";
-import { useEditor } from "@/hooks/use-editor";
+import { EditorCore } from "@/core";
+import { useEditor } from "@/editor/use-editor";
+import { useKeybindingsListener } from "@/actions/use-keybindings";
+import { useKeybindingsStore } from "@/actions/keybindings-store";
+import { useTimelineStore } from "@/timeline/timeline-store";
+import { useEditorActions } from "@/actions/use-editor-actions";
+import { loadFontAtlas } from "@/fonts/google-fonts";
 import {
-	useKeybindingsListener,
-	useKeybindingDisabler,
-} from "@/hooks/use-keybindings";
-import { useEditorActions } from "@/hooks/actions/use-editor-actions";
+	initializeGpuRenderer,
+	isGpuAvailable,
+} from "@/services/renderer/gpu-renderer";
 
 interface EditorProviderProps {
 	projectId: string;
@@ -16,32 +21,31 @@ interface EditorProviderProps {
 }
 
 export function EditorProvider({ projectId, children }: EditorProviderProps) {
-	const editor = useEditor();
+	const activeProject = useEditor((e) => e.project.getActiveOrNull());
 	const router = useRouter();
 	const [isLoading, setIsLoading] = useState(true);
 	const [error, setError] = useState<string | null>(null);
-	const { disableKeybindings, enableKeybindings } = useKeybindingDisabler();
-	const activeProject = editor.project.getActiveOrNull();
+	const { setLoadingProject } = useKeybindingsStore();
 
 	useEffect(() => {
-		if (isLoading) {
-			disableKeybindings();
-		} else {
-			enableKeybindings();
-		}
-	}, [isLoading, disableKeybindings, enableKeybindings]);
+		setLoadingProject(isLoading);
+	}, [isLoading, setLoadingProject]);
 
 	useEffect(() => {
 		let cancelled = false;
+		const editor = EditorCore.getInstance();
 
 		const loadProject = async () => {
 			try {
 				setIsLoading(true);
+				await initializeGpuRenderer();
+				editor.renderer.setDegraded(!isGpuAvailable());
 				await editor.project.loadProject({ id: projectId });
 
 				if (cancelled) return;
 
 				setIsLoading(false);
+				loadFontAtlas();
 			} catch (err) {
 				if (cancelled) return;
 
@@ -61,9 +65,16 @@ export function EditorProvider({ projectId, children }: EditorProviderProps) {
 						setIsLoading(false);
 					}
 				} else {
-					setError(
-						err instanceof Error ? err.message : "Failed to load project",
-					);
+					const wasmPanic = (window as Window & { __wasmPanic?: string })
+						.__wasmPanic;
+					if (wasmPanic) {
+						delete (window as Window & { __wasmPanic?: string }).__wasmPanic;
+						setError(wasmPanic);
+					} else {
+						setError(
+							err instanceof Error ? err.message : "Failed to load project",
+						);
+					}
 					setIsLoading(false);
 				}
 			}
@@ -74,7 +85,7 @@ export function EditorProvider({ projectId, children }: EditorProviderProps) {
 		return () => {
 			cancelled = true;
 		};
-	}, [projectId, editor, router]);
+	}, [projectId, router]);
 
 	if (error) {
 		return (
@@ -118,6 +129,13 @@ export function EditorProvider({ projectId, children }: EditorProviderProps) {
 
 function EditorRuntimeBindings() {
 	const editor = useEditor();
+	const rippleEditingEnabled = useTimelineStore(
+		(state) => state.rippleEditingEnabled,
+	);
+
+	useEffect(() => {
+		editor.command.isRippleEnabled = rippleEditingEnabled;
+	}, [editor, rippleEditingEnabled]);
 
 	useEffect(() => {
 		const handleBeforeUnload = (event: BeforeUnloadEvent) => {

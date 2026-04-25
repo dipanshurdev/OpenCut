@@ -10,18 +10,20 @@ import {
 	DropdownMenuTrigger,
 } from "../ui/dropdown-menu";
 import Link from "next/link";
-import { RenameProjectDialog } from "./dialogs/rename-project-dialog";
-import { DeleteProjectDialog } from "./dialogs/delete-project-dialog";
+import { RenameProjectDialog } from "@/project/components/rename-project-dialog";
+import { DeleteProjectDialog } from "@/project/components/delete-project-dialog";
 import { useRouter } from "next/navigation";
 import { FaDiscord } from "react-icons/fa6";
 import { ExportButton } from "./export-button";
+import { FeedbackPopover } from "@/feedback/components/feedback-popover";
 import { ThemeToggle } from "../theme-toggle";
-import { DEFAULT_LOGO_URL, SOCIAL_LINKS } from "@/constants/site-constants";
+import { DEFAULT_LOGO_URL } from "@/site/brand";
+import { SOCIAL_LINKS } from "@/site/social";
 import { toast } from "sonner";
-import { useEditor } from "@/hooks/use-editor";
-import { ArrowLeft02Icon, CommandIcon } from "@hugeicons/core-free-icons";
+import { useEditor } from "@/editor/use-editor";
+import { CommandIcon, Logout05Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ShortcutsDialog } from "./dialogs/shortcuts-dialog";
+import { ShortcutsDialog } from "@/actions/components/shortcuts-dialog";
 import Image from "next/image";
 import { cn } from "@/utils/ui";
 
@@ -33,6 +35,7 @@ export function EditorHeader() {
 				<EditableProjectName />
 			</div>
 			<nav className="flex items-center gap-2">
+				<FeedbackPopover />
 				<ExportButton />
 				<ThemeToggle />
 			</nav>
@@ -47,7 +50,7 @@ function ProjectDropdown() {
 	const [isExiting, setIsExiting] = useState(false);
 	const router = useRouter();
 	const editor = useEditor();
-	const activeProject = editor.project.getActive();
+	const activeProject = useEditor((e) => e.project.getActive());
 
 	const handleExit = async () => {
 		if (isExiting) return;
@@ -118,32 +121,30 @@ function ProjectDropdown() {
 						/>
 					</Button>
 				</DropdownMenuTrigger>
-				<DropdownMenuContent align="start" className="z-100 w-52">
+				<DropdownMenuContent align="start" className="z-100 w-44">
 					<DropdownMenuItem
-						className="flex items-center gap-1.5"
 						onClick={handleExit}
 						disabled={isExiting}
+						icon={<HugeiconsIcon icon={Logout05Icon} />}
 					>
-						<HugeiconsIcon icon={ArrowLeft02Icon} className="size-4" />
 						Exit project
 					</DropdownMenuItem>
 
-					<DropdownMenuSeparator />
 					<DropdownMenuItem
-						className="flex items-center gap-1.5"
 						onClick={() => setOpenDialog("shortcuts")}
+						icon={<HugeiconsIcon icon={CommandIcon} />}
 					>
-						<HugeiconsIcon icon={CommandIcon} className="size-4" />
-						Keyboard shortcuts
+						Shortcuts
 					</DropdownMenuItem>
-					<DropdownMenuItem asChild>
+
+					<DropdownMenuSeparator />
+
+					<DropdownMenuItem asChild icon={<FaDiscord className="size-4!" />}>
 						<Link
 							href={SOCIAL_LINKS.discord}
 							target="_blank"
 							rel="noopener noreferrer"
-							className="flex items-center gap-1.5"
 						>
-							<FaDiscord className="size-4" />
 							Discord
 						</Link>
 					</DropdownMenuItem>
@@ -171,7 +172,7 @@ function ProjectDropdown() {
 
 function EditableProjectName() {
 	const editor = useEditor();
-	const activeProject = editor.project.getActive();
+	const activeProject = useEditor((e) => e.project.getActive());
 	const [isEditing, setIsEditing] = useState(false);
 	const inputRef = useRef<HTMLInputElement>(null);
 	const originalNameRef = useRef("");
@@ -221,6 +222,7 @@ function EditableProjectName() {
 			event.preventDefault();
 			if (inputRef.current) {
 				inputRef.current.value = originalNameRef.current;
+				inputRef.current.setSelectionRange(0, 0);
 			}
 			setIsEditing(false);
 			inputRef.current?.blur();

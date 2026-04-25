@@ -43,6 +43,7 @@ export async function runStorageMigrations({
 		"projects",
 		1,
 	);
+
 	const projects = await projectsAdapter.getAll();
 
 	const orderedMigrations = [...migrations].sort((a, b) => a.from - b.from);
@@ -55,6 +56,11 @@ export async function runStorageMigrations({
 		}
 
 		let projectRecord = project as ProjectRecord;
+		const projectId = getProjectId({ project: projectRecord });
+		if (!projectId) {
+			continue;
+		}
+
 		let currentVersion = getProjectVersion({ project: projectRecord });
 		const targetVersion = orderedMigrations.at(-1)?.to ?? currentVersion;
 
@@ -80,14 +86,12 @@ export async function runStorageMigrations({
 				continue;
 			}
 
-			const result = await migration.transform(projectRecord);
+			const result = await migration.run({
+				projectId,
+				project: projectRecord,
+			});
 
 			if (result.skipped) {
-				break;
-			}
-
-			const projectId = getProjectId({ project: result.project });
-			if (!projectId) {
 				break;
 			}
 
@@ -136,7 +140,11 @@ function getProjectVersion({ project }: { project: ProjectRecord }): number {
 	return 0;
 }
 
-function getProjectName({ project }: { project: ProjectRecord }): string | null {
+function getProjectName({
+	project,
+}: {
+	project: ProjectRecord;
+}): string | null {
 	const metadata = project.metadata;
 	if (isRecord(metadata) && typeof metadata.name === "string") {
 		return metadata.name;

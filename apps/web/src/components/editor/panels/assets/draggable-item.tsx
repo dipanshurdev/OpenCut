@@ -10,9 +10,9 @@ import {
 	TooltipContent,
 	TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { useEditor } from "@/hooks/use-editor";
-import { clearDragData, setDragData } from "@/lib/drag-data";
-import type { TimelineDragData } from "@/types/drag";
+import { useEditor } from "@/editor/use-editor";
+import { clearDragData, setDragData } from "@/timeline/drag-data";
+import type { TimelineDragData } from "@/timeline/drag";
 import { cn } from "@/utils/ui";
 
 export interface DraggableItemProps {
@@ -29,7 +29,6 @@ export interface DraggableItemProps {
 	isRounded?: boolean;
 	variant?: "card" | "compact";
 	isDraggable?: boolean;
-	isHighlighted?: boolean;
 }
 
 export function DraggableItem({
@@ -46,13 +45,11 @@ export function DraggableItem({
 	isRounded = true,
 	variant = "card",
 	isDraggable = true,
-	isHighlighted = false,
 }: DraggableItemProps) {
 	const [isDragging, setIsDragging] = useState(false);
 	const [dragPosition, setDragPosition] = useState({ x: 0, y: 0 });
 	const dragRef = useRef<HTMLDivElement>(null);
 	const editor = useEditor();
-	const highlightClassName = `ring-2 ring-primary bg-primary/10 ${isRounded ? "rounded-sm" : ""}`;
 
 	const handleAddToTimeline = () => {
 		onAddToTimeline?.({ currentTime: editor.playback.getCurrentTime() });
@@ -98,13 +95,12 @@ export function DraggableItem({
 			{variant === "card" ? (
 				<div
 					ref={dragRef}
-					className={cn("group relative", containerClassName ?? "size-28")}
+					className={cn("group relative", containerClassName ?? "w-28")}
 				>
 					<div
 						className={cn(
-							"relative flex h-auto w-full cursor-default flex-col gap-1 p-1",
+							"relative flex h-auto w-full cursor-default flex-col gap-1 p-",
 							className,
-							isHighlighted && highlightClassName,
 						)}
 					>
 						<AspectRatio
@@ -144,15 +140,12 @@ export function DraggableItem({
 			) : (
 				<div
 					ref={dragRef}
-					className={cn(
-						"group relative w-full",
-						isHighlighted && highlightClassName,
-					)}
+					className={cn("group relative w-full", containerClassName)}
 				>
 					<button
 						type="button"
 						className={cn(
-							"flex h-8 w-full cursor-default items-center gap-3 px-1",
+							"flex h-8 w-full cursor-default items-center gap-3 px-1 outline-none",
 							isDraggable && "[&::-webkit-drag-ghost]:opacity-0",
 							className,
 						)}
@@ -160,10 +153,12 @@ export function DraggableItem({
 						onDragStart={isDraggable ? handleDragStart : undefined}
 						onDragEnd={isDraggable ? handleDragEnd : undefined}
 					>
-						<div className="size-6 flex-shrink-0 overflow-hidden rounded-[0.35rem]">
+						<div className="size-6 shrink-0 overflow-hidden rounded-sm">
 							{preview}
 						</div>
-						<span className="w-full flex-1 truncate text-sm text-left">{name}</span>
+						<span className="w-full flex-1 truncate text-sm text-left">
+							{name}
+						</span>
 					</button>
 				</div>
 			)}

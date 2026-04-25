@@ -1,26 +1,23 @@
-import {
-	DEFAULT_BLUR_INTENSITY,
-	DEFAULT_CANVAS_SIZE,
-	DEFAULT_COLOR,
-	DEFAULT_FPS,
-} from "@/constants/project-constants";
-import { IndexedDBAdapter } from "@/services/storage/indexeddb-adapter";
-import type { MediaAssetData } from "@/services/storage/types";
-import type {
-	AudioElement,
-	ImageElement,
-	TextElement,
-	TimelineTrack,
-	Transform,
-	VideoElement,
-} from "@/types/timeline";
 import type { MigrationResult, ProjectRecord } from "./types";
 import { getProjectId, isRecord } from "./utils";
 
-interface LegacyTimelineData {
-	tracks: unknown[];
-	lastModified: string;
+// Frozen snapshots of v2-era defaults. See ./README.md.
+const DEFAULT_BACKGROUND_BLUR_INTENSITY = 10;
+const DEFAULT_BACKGROUND_COLOR = "#000000";
+const DEFAULT_CANVAS_SIZE = { width: 1920, height: 1080 };
+const DEFAULT_FPS = 30;
+
+type LegacyMediaType = "image" | "video" | "audio";
+
+export interface V1ToV2Context {
+	legacyTracksBySceneId: Record<string, unknown[]>;
+	mediaTypesById: Record<string, LegacyMediaType>;
 }
+
+const EMPTY_V1_TO_V2_CONTEXT: V1ToV2Context = {
+	legacyTracksBySceneId: {},
+	mediaTypesById: {},
+};
 
 interface LegacyMediaElement {
 	type: "media";
@@ -50,21 +47,119 @@ interface LegacyMediaTrack {
 	[key: string]: unknown;
 }
 
-export interface TransformV1ToV2Options {
-	loadMediaAsset?: ({
-		mediaId,
-	}: {
-		mediaId: string;
-	}) => Promise<MediaAssetData | null>;
+interface V2Transform {
+	scale: number;
+	position: { x: number; y: number };
+	rotate: number;
 }
 
-export async function transformProjectV1ToV2({
+interface V2VideoElement {
+	id: string;
+	name: string;
+	type: "video";
+	mediaId: string;
+	muted: boolean;
+	hidden: boolean;
+	transform: V2Transform;
+	opacity: number;
+	duration: number;
+	startTime: number;
+	trimStart: number;
+	trimEnd: number;
+}
+
+interface V2ImageElement {
+	id: string;
+	name: string;
+	type: "image";
+	mediaId: string;
+	duration: number;
+	startTime: number;
+	trimStart: number;
+	trimEnd: number;
+	hidden: boolean;
+	transform: V2Transform;
+	opacity: number;
+}
+
+interface V2TextElement {
+	id: string;
+	name: string;
+	type: "text";
+	content: string;
+	fontSize: number;
+	fontFamily: string;
+	color: string;
+	background: {
+		enabled: boolean;
+		color: string;
+		cornerRadius: number;
+		paddingX: number;
+		paddingY: number;
+		offsetX: number;
+		offsetY: number;
+	};
+	textAlign: "left" | "center" | "right";
+	fontWeight: "normal" | "bold";
+	fontStyle: "normal" | "italic";
+	textDecoration: "none" | "underline" | "line-through";
+	hidden: boolean;
+	transform: V2Transform;
+	opacity: number;
+	duration: number;
+	startTime: number;
+	trimStart: number;
+	trimEnd: number;
+}
+
+interface V2AudioElement {
+	id: string;
+	name: string;
+	type: "audio";
+	sourceType: "upload";
+	mediaId: string;
+	volume: number;
+	duration: number;
+	startTime: number;
+	trimStart: number;
+	trimEnd: number;
+}
+
+interface V2VideoTrack {
+	id: string;
+	name: string;
+	type: "video";
+	elements: (V2VideoElement | V2ImageElement)[];
+	isMain: boolean;
+	muted: boolean;
+	hidden: boolean;
+}
+
+interface V2TextTrack {
+	id: string;
+	name: string;
+	type: "text";
+	elements: V2TextElement[];
+	hidden: boolean;
+}
+
+interface V2AudioTrack {
+	id: string;
+	name: string;
+	type: "audio";
+	elements: V2AudioElement[];
+	muted: boolean;
+}
+
+type V2TimelineTrack = V2VideoTrack | V2TextTrack | V2AudioTrack;
+
+export function transformProjectV1ToV2({
 	project,
-	options = {},
+	context = EMPTY_V1_TO_V2_CONTEXT,
 }: {
 	project: ProjectRecord;
-	options?: TransformV1ToV2Options;
-}): Promise<MigrationResult<ProjectRecord>> {
+	context?: V1ToV2Context;
+}): MigrationResult<ProjectRecord> {
 	const projectId = getProjectId({ project });
 	if (!projectId) {
 		return { project, skipped: true, reason: "no project id" };
@@ -74,27 +169,23 @@ export async function transformProjectV1ToV2({
 		return { project, skipped: true, reason: "already v2" };
 	}
 
-	const migratedProject = await migrateProject({
+	const migratedProject = migrateProject({
 		project,
 		projectId,
-		loadMediaAsset: options.loadMediaAsset,
+		context,
 	});
 	return { project: migratedProject, skipped: false };
 }
 
-async function migrateProject({
+function migrateProject({
 	project,
 	projectId,
-	loadMediaAsset,
+	context,
 }: {
 	project: ProjectRecord;
 	projectId: string;
-	loadMediaAsset?: ({
-		mediaId,
-	}: {
-		mediaId: string;
-	}) => Promise<MediaAssetData | null>;
-}): Promise<ProjectRecord> {
+	context: V1ToV2Context;
+}): ProjectRecord {
 	const createdAt = normalizeDateString({ value: project.createdAt });
 	const updatedAt = normalizeDateString({ value: project.updatedAt });
 	const metadataValue = project.metadata;
@@ -121,42 +212,35 @@ async function migrateProject({
 		? project.bookmarks
 		: null;
 
-	const migratedScenes = await Promise.all(
-		scenes.map(async (scene) => {
-			if (!isRecord(scene)) {
-				return scene;
-			}
+	const migratedScenes = scenes.map((scene) => {
+		if (!isRecord(scene)) {
+			return scene;
+		}
 
-			const sceneId = getStringValue({ value: scene.id });
-			if (!sceneId) {
-				return scene;
-			}
+		const sceneId = getStringValue({ value: scene.id });
+		if (!sceneId) {
+			return scene;
+		}
 
-			const existingTracks = scene.tracks;
-			const shouldLoadTracks =
-				!Array.isArray(existingTracks) || existingTracks.length === 0;
+		const existingTracks = scene.tracks;
+		const shouldLoadTracks =
+			!Array.isArray(existingTracks) || existingTracks.length === 0;
 
-			if (!shouldLoadTracks) {
-				return scene;
-			}
+		if (!shouldLoadTracks) {
+			return scene;
+		}
 
-			const tracks = await loadTracksFromLegacyDB({
-				projectId,
-				sceneId,
-				isMain: scene.isMain === true,
-			});
+		const tracks = context.legacyTracksBySceneId[sceneId] ?? [];
+		const transformedTracks = transformTracks({
+			tracks,
+			context,
+		});
 
-			const transformedTracks = await transformTracks({
-				tracks,
-				loadMediaAsset,
-			});
-
-			return {
-				...scene,
-				tracks: transformedTracks,
-			};
-		}),
-	);
+		return {
+			...scene,
+			tracks: transformedTracks,
+		};
+	});
 
 	const normalizedScenes = applyLegacyBookmarks({
 		scenes: migratedScenes,
@@ -209,186 +293,129 @@ async function migrateProject({
 	};
 }
 
-async function loadTracksFromLegacyDB({
-	projectId,
-	sceneId,
-	isMain,
-}: {
-	projectId: string;
-	sceneId: string;
-	isMain: boolean;
-}): Promise<unknown[]> {
-	if (typeof indexedDB === "undefined") {
-		return [];
-	}
-
-	const sceneDbName = `video-editor-timelines-${projectId}-${sceneId}`;
-	const projectDbName = `video-editor-timelines-${projectId}`;
-
-	const adapter = new IndexedDBAdapter<LegacyTimelineData>(
-		sceneDbName,
-		"timeline",
-		1,
-	);
-
-	let data = await adapter.get("timeline");
-
-	if (!data && isMain) {
-		const projectAdapter = new IndexedDBAdapter<LegacyTimelineData>(
-			projectDbName,
-			"timeline",
-			1,
-		);
-		data = await projectAdapter.get("timeline");
-	}
-
-	if (!data || !Array.isArray(data.tracks)) {
-		return [];
-	}
-
-	return data.tracks;
-}
-
-async function transformTracks({
+function transformTracks({
 	tracks,
-	loadMediaAsset,
+	context,
 }: {
 	tracks: unknown[];
-	loadMediaAsset?: ({
-		mediaId,
-	}: {
-		mediaId: string;
-	}) => Promise<MediaAssetData | null>;
-}): Promise<TimelineTrack[]> {
+	context: V1ToV2Context;
+}): V2TimelineTrack[] {
 	if (!Array.isArray(tracks)) {
 		return [];
 	}
 
 	let isFirstVideoTrackFound = false;
-	const transformedTracks: (TimelineTrack | null)[] = [];
-
-	for (const track of tracks) {
+	const transformedTracks = tracks.map((track): V2TimelineTrack | null => {
 		if (!isRecord(track)) {
-			transformedTracks.push(null);
-			continue;
+			return null;
 		}
 
 		const trackType = track.type;
 		if (trackType === "media") {
-			const videoTrack = await transformMediaTrack({
-				track: track as LegacyMediaTrack,
-				loadMediaAsset,
-				isMain: !isFirstVideoTrackFound,
-			});
+			const isMain = !isFirstVideoTrackFound;
 			isFirstVideoTrackFound = true;
-			transformedTracks.push(videoTrack);
-			continue;
+			const videoTrack = transformMediaTrack({
+				track: track as LegacyMediaTrack,
+				context,
+				isMain,
+			});
+			return videoTrack;
 		}
 
 		if (trackType === "text") {
-			transformedTracks.push(transformTextTrack({ track }));
-			continue;
+			return transformTextTrack({ track });
 		}
 
 		if (trackType === "audio") {
-			transformedTracks.push(transformAudioTrack({ track }));
-			continue;
+			return transformAudioTrack({ track });
 		}
 
-		transformedTracks.push(null);
-	}
+		return null;
+	});
 
 	return transformedTracks.filter(
-		(track): track is TimelineTrack => track !== null,
+		(track): track is V2TimelineTrack => track !== null,
 	);
 }
 
-async function transformMediaTrack({
+function transformMediaTrack({
 	track,
-	loadMediaAsset,
+	context,
 	isMain,
 }: {
 	track: LegacyMediaTrack;
-	loadMediaAsset?: ({
-		mediaId,
-	}: {
-		mediaId: string;
-	}) => Promise<MediaAssetData | null>;
+	context: V1ToV2Context;
 	isMain: boolean;
-}): Promise<TimelineTrack> {
+}): V2VideoTrack {
 	const elements = Array.isArray(track.elements) ? track.elements : [];
 
-	const transformedElements = await Promise.all(
-		elements.map(async (element) => {
-			if (!isRecord(element) || element.type !== "media") {
-				return null;
-			}
+	const transformedElements = elements.map((element) => {
+		if (!isRecord(element) || element.type !== "media") {
+			return null;
+		}
 
-			const mediaElement = element as LegacyMediaElement;
-			const mediaId = getStringValue({ value: mediaElement.mediaId });
-			if (!mediaId) {
-				return null;
-			}
+		const mediaElement = element as LegacyMediaElement;
+		const mediaId = getStringValue({ value: mediaElement.mediaId });
+		if (!mediaId) {
+			return null;
+		}
 
-			let mediaType: "video" | "image" = "video";
-			if (loadMediaAsset) {
-				const mediaAsset = await loadMediaAsset({ mediaId });
-				if (mediaAsset) {
-					mediaType = mediaAsset.type === "image" ? "image" : "video";
-				}
-			}
+		let mediaType: "video" | "image" = "video";
+		const storedMediaType = context.mediaTypesById[mediaId];
+		if (storedMediaType) {
+			mediaType = storedMediaType === "image" ? "image" : "video";
+		}
 
-			const defaultTransform: Transform = {
-				scale: 1,
-				position: { x: 0, y: 0 },
-				rotate: 0,
-			};
+		const defaultTransform: V2Transform = {
+			scale: 1,
+			position: { x: 0, y: 0 },
+			rotate: 0,
+		};
 
-			const muted = mediaElement.muted === true;
+		const muted = mediaElement.muted === true;
 
-			if (mediaType === "image") {
-				const imageElement: ImageElement = {
-					id: getStringValue({ value: element.id, fallback: "" }),
-					name: getStringValue({ value: element.name, fallback: "" }),
-					type: "image",
-					mediaId,
-					duration: getNumberValue({ value: element.duration, fallback: 0 }),
-					startTime: getNumberValue({
-						value: element.startTime,
-						fallback: 0,
-					}),
-					trimStart: getNumberValue({
-						value: element.trimStart,
-						fallback: 0,
-					}),
-					trimEnd: getNumberValue({ value: element.trimEnd, fallback: 0 }),
-					hidden: false,
-					transform: defaultTransform,
-					opacity: 1,
-				};
-				return imageElement;
-			}
-
-			const videoElement: VideoElement = {
+		if (mediaType === "image") {
+			const imageElement: V2ImageElement = {
 				id: getStringValue({ value: element.id, fallback: "" }),
 				name: getStringValue({ value: element.name, fallback: "" }),
-				type: "video",
+				type: "image",
 				mediaId,
-				muted,
+				duration: getNumberValue({ value: element.duration, fallback: 0 }),
+				startTime: getNumberValue({
+					value: element.startTime,
+					fallback: 0,
+				}),
+				trimStart: getNumberValue({
+					value: element.trimStart,
+					fallback: 0,
+				}),
+				trimEnd: getNumberValue({ value: element.trimEnd, fallback: 0 }),
 				hidden: false,
 				transform: defaultTransform,
 				opacity: 1,
-				duration: getNumberValue({ value: element.duration, fallback: 0 }),
-				startTime: getNumberValue({ value: element.startTime, fallback: 0 }),
-				trimStart: getNumberValue({ value: element.trimStart, fallback: 0 }),
-				trimEnd: getNumberValue({ value: element.trimEnd, fallback: 0 }),
 			};
-			return videoElement;
-		}),
-	);
+			return imageElement;
+		}
+
+		const videoElement: V2VideoElement = {
+			id: getStringValue({ value: element.id, fallback: "" }),
+			name: getStringValue({ value: element.name, fallback: "" }),
+			type: "video",
+			mediaId,
+			muted,
+			hidden: false,
+			transform: defaultTransform,
+			opacity: 1,
+			duration: getNumberValue({ value: element.duration, fallback: 0 }),
+			startTime: getNumberValue({ value: element.startTime, fallback: 0 }),
+			trimStart: getNumberValue({ value: element.trimStart, fallback: 0 }),
+			trimEnd: getNumberValue({ value: element.trimEnd, fallback: 0 }),
+		};
+		return videoElement;
+	});
 
 	const validElements = transformedElements.filter(
-		(el): el is VideoElement | ImageElement => el !== null,
+		(element): element is V2VideoElement | V2ImageElement => element !== null,
 	);
 
 	return {
@@ -406,11 +433,11 @@ function transformTextTrack({
 	track,
 }: {
 	track: Record<string, unknown>;
-}): TimelineTrack {
+}): V2TextTrack {
 	const elements = Array.isArray(track.elements) ? track.elements : [];
 
 	const transformedElements = elements
-		.map((element): TextElement | null => {
+		.map((element): V2TextElement | null => {
 			if (!isRecord(element) || element.type !== "text") {
 				return null;
 			}
@@ -427,7 +454,7 @@ function transformTextTrack({
 				fallback: 1,
 			});
 
-			const transform: Transform = {
+			const transform: V2Transform = {
 				scale: 1,
 				position: { x, y },
 				rotate: rotation,
@@ -450,10 +477,18 @@ function transformTextTrack({
 					value: textElement.color,
 					fallback: "#000000",
 				}),
-				backgroundColor: getStringValue({
-					value: textElement.backgroundColor,
-					fallback: "#FFFFFF",
-				}),
+				background: {
+					enabled: false,
+					color: getStringValue({
+						value: textElement.backgroundColor,
+						fallback: "transparent",
+					}),
+					cornerRadius: 0,
+					paddingX: 8,
+					paddingY: 4,
+					offsetX: 0,
+					offsetY: 0,
+				},
 				textAlign: (getStringValue({
 					value: textElement.textAlign,
 					fallback: "left",
@@ -479,7 +514,7 @@ function transformTextTrack({
 				trimEnd: getNumberValue({ value: element.trimEnd, fallback: 0 }),
 			};
 		})
-		.filter((el): el is TextElement => el !== null);
+		.filter((element): element is V2TextElement => element !== null);
 
 	return {
 		id: getStringValue({ value: track.id, fallback: "" }),
@@ -494,11 +529,11 @@ function transformAudioTrack({
 	track,
 }: {
 	track: Record<string, unknown>;
-}): TimelineTrack {
+}): V2AudioTrack {
 	const elements = Array.isArray(track.elements) ? track.elements : [];
 
 	const transformedElements = elements
-		.map((element): AudioElement | null => {
+		.map((element): V2AudioElement | null => {
 			if (!isRecord(element) || element.type !== "audio") {
 				return null;
 			}
@@ -522,7 +557,7 @@ function transformAudioTrack({
 				trimEnd: getNumberValue({ value: element.trimEnd, fallback: 0 }),
 			};
 		})
-		.filter((el): el is AudioElement => el !== null);
+		.filter((element): element is V2AudioElement => element !== null);
 
 	return {
 		id: getStringValue({ value: track.id, fallback: "" }),
@@ -633,14 +668,17 @@ function getBackgroundValue({
 				type: "blur",
 				blurIntensity: getNumberValue({
 					value: value.blurIntensity,
-					fallback: DEFAULT_BLUR_INTENSITY,
+					fallback: DEFAULT_BACKGROUND_BLUR_INTENSITY,
 				}),
 			};
 		}
 
 		return {
 			type: "color",
-			color: getStringValue({ value: value.color, fallback: DEFAULT_COLOR }),
+			color: getStringValue({
+				value: value.color,
+				fallback: DEFAULT_BACKGROUND_COLOR,
+			}),
 		};
 	}
 
@@ -649,14 +687,17 @@ function getBackgroundValue({
 			type: "blur",
 			blurIntensity: getNumberValue({
 				value: blurIntensity,
-				fallback: DEFAULT_BLUR_INTENSITY,
+				fallback: DEFAULT_BACKGROUND_BLUR_INTENSITY,
 			}),
 		};
 	}
 
 	return {
 		type: "color",
-		color: getStringValue({ value: backgroundColor, fallback: DEFAULT_COLOR }),
+		color: getStringValue({
+			value: backgroundColor,
+			fallback: DEFAULT_BACKGROUND_COLOR,
+		}),
 	};
 }
 

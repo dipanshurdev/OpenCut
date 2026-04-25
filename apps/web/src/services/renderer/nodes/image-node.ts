@@ -1,51 +1,71 @@
-import type { CanvasRenderer } from "../canvas-renderer";
-import { VisualNode, type VisualNodeParams } from "./visual-node";
+import {
+	VisualNode,
+	type ResolvedVisualSourceNodeState,
+	type VisualNodeParams,
+} from "./visual-node";
 
 export interface ImageNodeParams extends VisualNodeParams {
 	url: string;
+	maxSourceSize?: number;
 }
 
-export class ImageNode extends VisualNode<ImageNodeParams> {
-	private image?: HTMLImageElement;
-	private readyPromise: Promise<void>;
+export interface CachedImageSource {
+	source: HTMLImageElement | OffscreenCanvas;
+	width: number;
+	height: number;
+}
 
-	constructor(params: ImageNodeParams) {
-		super(params);
-		this.readyPromise = this.load();
-	}
+const imageSourceCache = new Map<string, Promise<CachedImageSource>>();
 
-	private async load() {
+export function loadImageSource(
+	url: string,
+	maxSourceSize?: number,
+): Promise<CachedImageSource> {
+	const cacheKey = `${url}::${maxSourceSize ?? "full"}`;
+
+	const cached = imageSourceCache.get(cacheKey);
+	if (cached) return cached;
+
+	const promise = (async (): Promise<CachedImageSource> => {
 		const image = new Image();
-		this.image = image;
 
 		await new Promise<void>((resolve, reject) => {
 			image.onload = () => resolve();
 			image.onerror = () => reject(new Error("Image load failed"));
-			image.src = this.params.url;
+			image.src = url;
 		});
-	}
 
-	async render({ renderer, time }: { renderer: CanvasRenderer; time: number }) {
-		await super.render({ renderer, time });
+		const naturalWidth = image.naturalWidth;
+		const naturalHeight = image.naturalHeight;
+		const exceedsLimit =
+			maxSourceSize &&
+			(naturalWidth > maxSourceSize || naturalHeight > maxSourceSize);
 
-		if (!this.isInRange(time)) {
-			return;
+		if (exceedsLimit) {
+			const scale = Math.min(
+				maxSourceSize / naturalWidth,
+				maxSourceSize / naturalHeight,
+			);
+			const scaledWidth = Math.round(naturalWidth * scale);
+			const scaledHeight = Math.round(naturalHeight * scale);
+
+			const offscreen = new OffscreenCanvas(scaledWidth, scaledHeight);
+			const ctx = offscreen.getContext("2d");
+
+			if (ctx) {
+				ctx.drawImage(image, 0, 0, scaledWidth, scaledHeight);
+				return { source: offscreen, width: scaledWidth, height: scaledHeight };
+			}
 		}
 
-		await this.readyPromise;
+		return { source: image, width: naturalWidth, height: naturalHeight };
+	})();
 
-		if (!this.image) {
-			return;
-		}
-
-		const mediaW = this.image.naturalWidth || renderer.width;
-		const mediaH = this.image.naturalHeight || renderer.height;
-
-		this.renderVisual({
-			renderer,
-			source: this.image,
-			sourceWidth: mediaW,
-			sourceHeight: mediaH,
-		});
-	}
+	imageSourceCache.set(cacheKey, promise);
+	return promise;
 }
+
+export class ImageNode extends VisualNode<
+	ImageNodeParams,
+	ResolvedVisualSourceNodeState
+> {}
