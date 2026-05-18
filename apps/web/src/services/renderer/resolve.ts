@@ -1,11 +1,5 @@
-import { mediaTimeToSeconds } from "opencut-wasm";
-import {
-	getElementLocalTime,
-	resolveColorAtTime,
-	resolveGraphicParamsAtTime,
-	resolveOpacityAtTime,
-	resolveTransformAtTime,
-} from "@/animation";
+import { mediaTimeToSeconds, roundMediaTime } from "@/wasm";
+import { getElementLocalTime } from "@/animation";
 import { resolveEffectParamsAtTime } from "@/animation/effect-param-channel";
 import {
 	buildGaussianBlurPasses,
@@ -14,11 +8,17 @@ import {
 import { effectsRegistry, resolveEffectPasses } from "@/effects";
 import type { Effect, EffectPass } from "@/effects/types";
 import { getSourceTimeAtClipTime } from "@/retime";
-import { DEFAULT_GRAPHIC_SOURCE_SIZE } from "@/graphics";
 import {
+	DEFAULT_GRAPHIC_SOURCE_SIZE,
+	resolveGraphicElementParamsAtTime,
+} from "@/graphics";
+import {
+	buildTextBackgroundFromElement,
 	getTextMeasurementContext,
 	measureTextElement,
 } from "@/text/measure-element";
+import { resolveColorAtTime, resolveOpacityAtTime } from "@/animation/values";
+import { resolveTransformAtTime } from "@/rendering/animation-values";
 import { videoCache } from "@/services/video-cache/service";
 import type { CanvasRenderer } from "./canvas-renderer";
 import type { AnyBaseNode } from "./nodes/base-node";
@@ -113,7 +113,8 @@ function resolveEffectPassGroups({
 		.filter((effect) => effect.enabled)
 		.map((effect) => {
 			const resolvedParams = resolveEffectParamsAtTime({
-				effect,
+				effectId: effect.id,
+				params: effect.params,
 				animations,
 				localTime,
 			});
@@ -204,7 +205,7 @@ async function resolveVideoNode({
 	const frame = await videoCache.getFrameAt({
 		mediaId: node.params.mediaId,
 		file: node.params.file,
-		time: mediaTimeToSeconds({ time: sourceTimeTicks }),
+		time: mediaTimeToSeconds({ time: roundMediaTime({ time: sourceTimeTicks }) }),
 	});
 	if (!frame) {
 		return null;
@@ -235,10 +236,10 @@ async function resolveImageNode({
 	node: ImageNode;
 	context: ResolveContext;
 }): Promise<ResolvedVisualSourceNodeState | null> {
-	const source = await loadImageSource(
-		node.params.url,
-		node.params.maxSourceSize,
-	);
+	const source = await loadImageSource({
+		url: node.params.url,
+		maxSourceSize: node.params.maxSourceSize,
+	});
 	const visualState = resolveVisualState({
 		params: node.params,
 		context,
@@ -304,7 +305,7 @@ function resolveGraphicNode({
 
 	return {
 		...visualState,
-		resolvedParams: resolveGraphicParamsAtTime({
+		resolvedParams: resolveGraphicElementParamsAtTime({
 			element: node.params,
 			localTime: visualState.localTime,
 		}),
@@ -330,6 +331,7 @@ function resolveTextNode({
 		elementStartTime: node.params.startTime,
 		elementDuration: node.params.duration,
 	});
+	const background = buildTextBackgroundFromElement({ element: node.params });
 
 	return {
 		transform: resolveTransformAtTime({
@@ -343,13 +345,16 @@ function resolveTextNode({
 			localTime,
 		}),
 		textColor: resolveColorAtTime({
-			baseColor: node.params.color,
+			baseColor:
+				typeof node.params.params.color === "string"
+					? node.params.params.color
+					: "#ffffff",
 			animations: node.params.animations,
 			propertyPath: "color",
 			localTime,
 		}),
 		backgroundColor: resolveColorAtTime({
-			baseColor: node.params.background.color,
+			baseColor: background.color,
 			animations: node.params.animations,
 			propertyPath: "background.color",
 			localTime,
@@ -421,7 +426,7 @@ async function resolveBackdropSource({
 		const frame = await videoCache.getFrameAt({
 			mediaId: node.params.mediaId,
 			file: node.params.file,
-			time: mediaTimeToSeconds({ time: sourceTimeTicks }),
+			time: mediaTimeToSeconds({ time: roundMediaTime({ time: sourceTimeTicks }) }),
 		});
 		if (!frame) {
 			return null;
@@ -434,7 +439,7 @@ async function resolveBackdropSource({
 		};
 	}
 
-	const source = await loadImageSource(node.params.url);
+	const source = await loadImageSource({ url: node.params.url });
 	return {
 		source: source.source,
 		width: source.width,

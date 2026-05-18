@@ -6,12 +6,13 @@ import {
 	getFrameTime,
 	removeBookmarkFromArray,
 } from "@/timeline/bookmarks/index";
+import { type MediaTime, ZERO_MEDIA_TIME } from "@/wasm";
 
 export class RemoveBookmarkCommand extends Command {
 	private savedScenes: TScene[] | null = null;
-	private frameTime: number = 0;
+	private frameTime: MediaTime = ZERO_MEDIA_TIME;
 
-	constructor(private time: number) {
+	constructor(private time: MediaTime) {
 		super();
 	}
 

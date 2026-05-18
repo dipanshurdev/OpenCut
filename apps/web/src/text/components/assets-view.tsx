@@ -3,11 +3,12 @@ import { PanelView } from "@/components/editor/panels/assets/views/base-panel";
 import { useEditor } from "@/editor/use-editor";
 import { DEFAULTS } from "@/timeline/defaults";
 import { buildTextElement } from "@/timeline/element-utils";
+import type { MediaTime } from "@/wasm";
 
 export function TextView() {
 	const editor = useEditor();
 
-	const handleAddToTimeline = ({ currentTime }: { currentTime: number }) => {
+	const handleAddToTimeline = ({ currentTime }: { currentTime: MediaTime }) => {
 		const activeScene = editor.scenes.getActiveScene();
 		if (!activeScene) return;
 
@@ -35,7 +36,7 @@ export function TextView() {
 					id: "temp-text-id",
 					type: DEFAULTS.text.element.type,
 					name: DEFAULTS.text.element.name,
-					content: DEFAULTS.text.element.content,
+					content: "Default text",
 				}}
 				aspectRatio={1}
 				onAddToTimeline={handleAddToTimeline}

@@ -1,8 +1,9 @@
 import { drawCssBackground } from "@/gradients";
-import { masksRegistry } from "@/masks";
+import { getMaskDefinition } from "@/masks";
+import { incrementCounter } from "@/diagnostics/render-perf";
 import type { AnyBaseNode } from "../nodes/base-node";
 import type { CanvasRenderer } from "../canvas-renderer";
-import { createOffscreenCanvas } from "../canvas-utils";
+import { createCanvasSurface } from "../canvas-utils";
 import { BlurBackgroundNode } from "../nodes/blur-background-node";
 import { ColorNode } from "../nodes/color-node";
 import { EffectLayerNode } from "../nodes/effect-layer-node";
@@ -21,15 +22,10 @@ import type {
 	FrameItemDescriptor,
 	LayerMaskDescriptor,
 	QuadTransformDescriptor,
+	TextureCanvasDrawFn,
+	TextureUploadDescriptor,
 } from "./types";
 import { DEFAULT_GRAPHIC_SOURCE_SIZE } from "@/graphics";
-
-export type TextureUploadDescriptor = {
-	id: string;
-	source: CanvasImageSource;
-	width: number;
-	height: number;
-};
 
 export async function buildFrameDescriptor({
 	node,
@@ -51,6 +47,9 @@ export async function buildFrameDescriptor({
 		items,
 		textures,
 	});
+
+	incrementCounter({ name: "frameItems", by: items.length });
+	incrementCounter({ name: "frameTextures", by: textures.size });
 
 	return {
 		frame: {
@@ -93,31 +92,21 @@ async function collectNode({
 
 	if (node instanceof ColorNode) {
 		const textureId = `${path}:color`;
-		const canvas = createOffscreenCanvas({
-			width: renderer.width,
-			height: renderer.height,
-		});
-		const ctx = canvas.getContext("2d") as
-			| CanvasRenderingContext2D
-			| OffscreenCanvasRenderingContext2D
-			| null;
-		if (!ctx) return;
-		if (/gradient\(/i.test(node.params.color)) {
-			drawCssBackground({
-				ctx,
-				width: renderer.width,
-				height: renderer.height,
-				css: node.params.color,
-			});
-		} else {
-			ctx.fillStyle = node.params.color;
-			ctx.fillRect(0, 0, renderer.width, renderer.height);
-		}
+		const { width, height } = renderer;
 		textures.set(textureId, {
+			kind: "rendered",
 			id: textureId,
-			source: canvas,
-			width: renderer.width,
-			height: renderer.height,
+			contentHash: `color:${node.params.color}:${width}x${height}`,
+			width,
+			height,
+			draw: (ctx) => {
+				if (/gradient\(/i.test(node.params.color)) {
+					drawCssBackground({ ctx, width, height, css: node.params.color });
+				} else {
+					ctx.fillStyle = node.params.color;
+					ctx.fillRect(0, 0, width, height);
+				}
+			},
 		});
 		items.push({
 			type: "layer",
@@ -147,36 +136,35 @@ async function collectNode({
 			return;
 		}
 		const textureId = `${path}:blur-background`;
-		const backdropCanvas = createOffscreenCanvas({
-			width: renderer.width,
-			height: renderer.height,
-		});
-		const backdropCtx = backdropCanvas.getContext("2d") as
-			| CanvasRenderingContext2D
-			| OffscreenCanvasRenderingContext2D
-			| null;
-		if (!backdropCtx) return;
+		const { width, height } = renderer;
 		const { backdropSource, passes } = node.resolved;
-		const coverScale = Math.max(
-			renderer.width / backdropSource.width,
-			renderer.height / backdropSource.height,
-		);
-		const scaledWidth = backdropSource.width * coverScale;
-		const scaledHeight = backdropSource.height * coverScale;
-		const offsetX = (renderer.width - scaledWidth) / 2;
-		const offsetY = (renderer.height - scaledHeight) / 2;
-		backdropCtx.drawImage(
-			backdropSource.source,
-			offsetX,
-			offsetY,
-			scaledWidth,
-			scaledHeight,
-		);
+		// Backdrop pixels come from a decoded video/image frame whose identity
+		// already changes when it changes. Hashing the source reference is
+		// enough to let us skip redraws on frozen frames.
+		const contentHash = `blur:${identityKey(backdropSource.source)}:${backdropSource.width}x${backdropSource.height}:${width}x${height}`;
 		textures.set(textureId, {
+			kind: "rendered",
 			id: textureId,
-			source: backdropCanvas,
-			width: renderer.width,
-			height: renderer.height,
+			contentHash,
+			width,
+			height,
+			draw: (ctx) => {
+				const coverScale = Math.max(
+					width / backdropSource.width,
+					height / backdropSource.height,
+				);
+				const scaledWidth = backdropSource.width * coverScale;
+				const scaledHeight = backdropSource.height * coverScale;
+				const offsetX = (width - scaledWidth) / 2;
+				const offsetY = (height - scaledHeight) / 2;
+				ctx.drawImage(
+					backdropSource.source,
+					offsetX,
+					offsetY,
+					scaledWidth,
+					scaledHeight,
+				);
+			},
 		});
 		items.push({
 			type: "layer",
@@ -253,6 +241,7 @@ async function collectVisualSourceNode({
 
 	const textureId = `${path}:source`;
 	textures.set(textureId, {
+		kind: "external",
 		id: textureId,
 		source,
 		width: sourceWidth,
@@ -305,28 +294,24 @@ function collectTextNode({
 	}
 
 	const textureId = `${path}:text`;
-	const canvas = createOffscreenCanvas({
-		width: renderer.width,
-		height: renderer.height,
-	});
-	const ctx = canvas.getContext("2d") as
-		| CanvasRenderingContext2D
-		| OffscreenCanvasRenderingContext2D
-		| null;
-	if (!ctx) {
-		return;
-	}
-
-	renderTextToContext({
-		node,
-		ctx,
-	});
-
+	const { width, height } = renderer;
+	// Text output is fully determined by node.params + node.resolved. Both are
+	// plain data we can stringify cheaply; the resolved measured layout is the
+	// expensive part of text setup, so stringifying it here is orders of
+	// magnitude cheaper than re-rasterizing when nothing changed.
+	const contentHash = `text:${width}x${height}:${JSON.stringify({
+		params: node.params,
+		resolved: node.resolved,
+	})}`;
 	textures.set(textureId, {
+		kind: "rendered",
 		id: textureId,
-		source: canvas,
-		width: renderer.width,
-		height: renderer.height,
+		contentHash,
+		width,
+		height,
+		draw: (ctx) => {
+			renderTextToContext({ node, ctx });
+		},
 	});
 	items.push({
 		type: "layer",
@@ -405,153 +390,137 @@ function buildMaskArtifacts({
 		return { mask: null, strokeLayer: null };
 	}
 
-	const definition = masksRegistry.get(mask.type);
+	const definition = getMaskDefinition(mask.type);
 
 	if (definition.isActive?.(mask.params) === false) {
 		return { mask: null, strokeLayer: null };
 	}
 
-	const elementMaskCanvas = createOffscreenCanvas({
-		width: Math.round(transform.width),
-		height: Math.round(transform.height),
-	});
-	const elementMaskCtx = elementMaskCanvas.getContext("2d") as
-		| CanvasRenderingContext2D
-		| OffscreenCanvasRenderingContext2D
-		| null;
-	if (!elementMaskCtx) {
-		return { mask: null, strokeLayer: null };
-	}
-	elementMaskCtx.clearRect(0, 0, transform.width, transform.height);
-
-	let strokePath: Path2D | null = null;
-	let feather = mask.params.feather;
-	const canRenderMaskDirectly = Boolean(definition.renderer.renderMask);
-	const shouldRenderMaskDirectly =
-		canRenderMaskDirectly &&
-		(!definition.renderer.buildPath ||
-			(mask.params.feather > 0 &&
-				definition.renderer.renderMaskHandlesFeather));
-	if (shouldRenderMaskDirectly && definition.renderer.renderMask) {
-		definition.renderer.renderMask({
-			resolvedParams: mask.params,
-			ctx: elementMaskCtx,
-			width: Math.round(transform.width),
-			height: Math.round(transform.height),
-			feather: mask.params.feather,
-		});
-		if (definition.renderer.renderMaskHandlesFeather) {
-			feather = 0;
-		}
-		strokePath =
-			definition.renderer.buildStrokePath?.({
-				resolvedParams: mask.params,
-				width: transform.width,
-				height: transform.height,
-			}) ?? null;
-	} else {
-		if (!definition.renderer.buildPath) {
-			return { mask: null, strokeLayer: null };
-		}
-		const path2d = definition.renderer.buildPath({
-			resolvedParams: mask.params,
-			width: transform.width,
-			height: transform.height,
-		});
-		elementMaskCtx.fillStyle = "white";
-		elementMaskCtx.fill(path2d);
-		strokePath =
-			definition.renderer.buildStrokePath?.({
-				resolvedParams: mask.params,
-				width: transform.width,
-				height: transform.height,
-			}) ?? path2d;
-	}
-
-	const fullMaskCanvas = createOffscreenCanvas({
-		width: renderer.width,
-		height: renderer.height,
-	});
-	const fullMaskCtx = fullMaskCanvas.getContext("2d") as
-		| CanvasRenderingContext2D
-		| OffscreenCanvasRenderingContext2D
-		| null;
-	if (!fullMaskCtx) {
-		return { mask: null, strokeLayer: null };
-	}
-	drawTransformedCanvas({
-		ctx: fullMaskCtx,
-		source: elementMaskCanvas,
-		transform,
-	});
+	const { body } = definition.renderer;
+	const usesOpaqueFastPath =
+		body.kind === "drawWithFeather" &&
+		mask.params.feather === 0 &&
+		Boolean(body.opaqueFastPath);
+	// drawWithFeather renderers encode feathering analytically in their canvas output
+	// (e.g. split mask uses a linear gradient instead of JFA). The descriptor feather is
+	// zeroed so the GPU compositor copies the mask texture as-is and does not run a second
+	// JFA feather pass on top of an already-soft texture.
+	const feather = body.kind === "drawWithFeather" ? 0 : mask.params.feather;
 
 	const maskTextureId = `${path}:mask`;
-	textures.set(maskTextureId, {
-		id: maskTextureId,
-		source: fullMaskCanvas,
-		width: renderer.width,
-		height: renderer.height,
-	});
+	const { width: canvasWidth, height: canvasHeight } = renderer;
+	const maskContentHash = `mask:${mask.type}:${JSON.stringify(mask.params)}:${transformHash(transform)}:${canvasWidth}x${canvasHeight}:body=${body.kind}:fastPath=${usesOpaqueFastPath}`;
+	const drawMask: TextureCanvasDrawFn = (ctx) => {
+		const { canvas: elementMaskCanvas, context: elementMaskCtx } =
+			createCanvasSurface({
+				width: Math.round(transform.width),
+				height: Math.round(transform.height),
+			});
 
-	let strokeLayer: FrameItemDescriptor | null = null;
-	if (
-		mask.params.strokeWidth > 0 &&
-		(strokePath || definition.renderer.renderStroke)
-	) {
-		const strokeCanvas = createOffscreenCanvas({
-			width: Math.round(transform.width),
-			height: Math.round(transform.height),
-		});
-		const strokeCtx = strokeCanvas.getContext("2d") as
-			| CanvasRenderingContext2D
-			| OffscreenCanvasRenderingContext2D
-			| null;
-		if (strokeCtx) {
-			if (definition.renderer.renderStroke) {
-				definition.renderer.renderStroke({
+		switch (body.kind) {
+			case "fillPath": {
+				const path2d = body.buildPath({
 					resolvedParams: mask.params,
-					ctx: strokeCtx,
 					width: transform.width,
 					height: transform.height,
 				});
-			} else if (strokePath) {
-				strokeCtx.strokeStyle = mask.params.strokeColor;
-				strokeCtx.lineWidth = mask.params.strokeWidth;
-				strokeCtx.stroke(strokePath);
+				elementMaskCtx.fillStyle = "white";
+				elementMaskCtx.fill(path2d);
+				break;
+			}
+			case "drawOpaque":
+				body.drawOpaque({
+					resolvedParams: mask.params,
+					ctx: elementMaskCtx,
+					width: Math.round(transform.width),
+					height: Math.round(transform.height),
+				});
+				break;
+			case "drawWithFeather":
+				if (usesOpaqueFastPath && body.opaqueFastPath) {
+					const path2d = body.opaqueFastPath.buildPath({
+						resolvedParams: mask.params,
+						width: transform.width,
+						height: transform.height,
+					});
+					elementMaskCtx.fillStyle = "white";
+					elementMaskCtx.fill(path2d);
+				} else {
+					body.drawWithFeather({
+						resolvedParams: mask.params,
+						ctx: elementMaskCtx,
+						width: Math.round(transform.width),
+						height: Math.round(transform.height),
+						feather: mask.params.feather,
+					});
+				}
+				break;
+		}
+
+		drawTransformedCanvas({ ctx, source: elementMaskCanvas, transform });
+	};
+	textures.set(maskTextureId, {
+		kind: "rendered",
+		id: maskTextureId,
+		contentHash: maskContentHash,
+		width: canvasWidth,
+		height: canvasHeight,
+		draw: drawMask,
+	});
+
+	const stroke = definition.renderer.stroke;
+	const hasStroke = mask.params.strokeWidth > 0 && Boolean(stroke);
+	let strokeLayer: FrameItemDescriptor | null = null;
+	if (hasStroke && stroke) {
+		const strokeTextureId = `${path}:mask-stroke`;
+		const strokeContentHash = `stroke:${mask.type}:${JSON.stringify(mask.params)}:${transformHash(transform)}:${canvasWidth}x${canvasHeight}:stroke=${stroke.kind}`;
+		const drawStroke: TextureCanvasDrawFn = (ctx) => {
+			const { canvas: strokeCanvas, context: strokeCtx } = createCanvasSurface({
+				width: Math.round(transform.width),
+				height: Math.round(transform.height),
+			});
+
+			switch (stroke.kind) {
+				case "renderStroke":
+					stroke.renderStroke({
+						resolvedParams: mask.params,
+						ctx: strokeCtx,
+						width: transform.width,
+						height: transform.height,
+					});
+					break;
+				case "strokeFromPath": {
+					const strokePath = stroke.buildStrokePath({
+						resolvedParams: mask.params,
+						width: transform.width,
+						height: transform.height,
+					});
+					strokeCtx.strokeStyle = mask.params.strokeColor;
+					strokeCtx.lineWidth = mask.params.strokeWidth;
+					strokeCtx.stroke(strokePath);
+					break;
+				}
 			}
 
-			const fullStrokeCanvas = createOffscreenCanvas({
-				width: renderer.width,
-				height: renderer.height,
-			});
-			const fullStrokeCtx = fullStrokeCanvas.getContext("2d") as
-				| CanvasRenderingContext2D
-				| OffscreenCanvasRenderingContext2D
-				| null;
-			if (fullStrokeCtx) {
-				drawTransformedCanvas({
-					ctx: fullStrokeCtx,
-					source: strokeCanvas,
-					transform,
-				});
-				const strokeTextureId = `${path}:mask-stroke`;
-				textures.set(strokeTextureId, {
-					id: strokeTextureId,
-					source: fullStrokeCanvas,
-					width: renderer.width,
-					height: renderer.height,
-				});
-				strokeLayer = {
-					type: "layer",
-					textureId: strokeTextureId,
-					transform: fullCanvasTransform(renderer),
-					opacity: 1,
-					blendMode: "normal",
-					effectPassGroups: [],
-					mask: null,
-				};
-			}
-		}
+			drawTransformedCanvas({ ctx, source: strokeCanvas, transform });
+		};
+		textures.set(strokeTextureId, {
+			kind: "rendered",
+			id: strokeTextureId,
+			contentHash: strokeContentHash,
+			width: canvasWidth,
+			height: canvasHeight,
+			draw: drawStroke,
+		});
+		strokeLayer = {
+			type: "layer",
+			textureId: strokeTextureId,
+			transform: fullCanvasTransform(renderer),
+			opacity: 1,
+			blendMode: "normal",
+			effectPassGroups: [],
+			mask: null,
+		};
 	}
 
 	return {
@@ -589,4 +558,24 @@ function drawTransformedCanvas({
 	}
 	ctx.drawImage(source, x, y, transform.width, transform.height);
 	ctx.restore();
+}
+
+function transformHash(transform: QuadTransformDescriptor): string {
+	return `${transform.centerX}:${transform.centerY}:${transform.width}:${transform.height}:${transform.rotationDegrees}:${transform.flipX ? 1 : 0}:${transform.flipY ? 1 : 0}`;
+}
+
+// Stable identity key for CanvasImageSource. Using a WeakMap → counter keeps
+// hash string length bounded and avoids holding sources alive.
+const identityKeys = new WeakMap<object, number>();
+let nextIdentity = 1;
+function identityKey(source: CanvasImageSource): string {
+	if (typeof source === "object" && source !== null) {
+		let key = identityKeys.get(source);
+		if (key === undefined) {
+			key = nextIdentity++;
+			identityKeys.set(source, key);
+		}
+		return `@${key}`;
+	}
+	return "@?";
 }

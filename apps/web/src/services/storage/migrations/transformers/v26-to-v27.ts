@@ -1,7 +1,7 @@
 import type { MigrationResult, ProjectRecord } from "./types";
 import { getProjectId, isRecord } from "./utils";
 
-interface CustomMaskPathPoint {
+interface FreeformPathPoint {
 	id: string;
 	x: number;
 	y: number;
@@ -11,35 +11,34 @@ interface CustomMaskPathPoint {
 	outY: number;
 }
 
-function isCustomMaskPathPoint(value: unknown): value is CustomMaskPathPoint {
-	if (!value || typeof value !== "object") {
+function isFreeformPathPoint(value: unknown): value is FreeformPathPoint {
+	if (!isRecord(value)) {
 		return false;
 	}
 
-	const candidate = value as Record<string, unknown>;
 	return (
-		typeof candidate.id === "string" &&
-		typeof candidate.x === "number" &&
-		typeof candidate.y === "number" &&
-		typeof candidate.inX === "number" &&
-		typeof candidate.inY === "number" &&
-		typeof candidate.outX === "number" &&
-		typeof candidate.outY === "number"
+		typeof value.id === "string" &&
+		typeof value.x === "number" &&
+		typeof value.y === "number" &&
+		typeof value.inX === "number" &&
+		typeof value.inY === "number" &&
+		typeof value.outX === "number" &&
+		typeof value.outY === "number"
 	);
 }
 
-function parseCustomMaskPath({
+function parseFreeformPath({
 	path,
 }: {
 	path: string;
-}): CustomMaskPathPoint[] {
+}): FreeformPathPoint[] {
 	if (!path) {
 		return [];
 	}
 
 	try {
 		const parsed = JSON.parse(path);
-		return Array.isArray(parsed) ? parsed.filter(isCustomMaskPathPoint) : [];
+		return Array.isArray(parsed) ? parsed.filter(isFreeformPathPoint) : [];
 	} catch {
 		return [];
 	}
@@ -151,7 +150,7 @@ function migrateMask({ mask }: { mask: unknown }): unknown {
 		...mask,
 		params: {
 			...mask.params,
-			path: parseCustomMaskPath({ path }),
+			path: parseFreeformPath({ path }),
 		},
 	};
 }

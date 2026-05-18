@@ -9,24 +9,25 @@ import type {
 	RetimeConfig,
 } from "@/timeline";
 import { calculateTotalDuration } from "@/timeline";
+import { TimelineDragSource } from "@/timeline/drag-source";
 import { findTrackInSceneTracks } from "@/timeline/track-element-update";
+import { lastFrameMediaTime, type MediaTime, ZERO_MEDIA_TIME } from "@/wasm";
 import {
 	canElementBeHidden,
 	canElementHaveAudio,
 } from "@/timeline/element-utils";
+import { isElementMuted } from "@/timeline/audio-state";
 import type {
 	AnimationPath,
 	AnimationInterpolation,
-	AnimationValue,
-	AnimationValueForPath,
 	ScalarCurveKeyframePatch,
 } from "@/animation/types";
+import type { ParamValue } from "@/params";
 import {
 	getElementLocalTime,
-	resolveAnimationTarget,
 	resolveAnimationPathValueAtTime,
 } from "@/animation";
-import { lastFrameTime } from "opencut-wasm";
+import { resolveAnimationTarget } from "@/timeline/animation-targets";
 import { BatchCommand } from "@/commands";
 import {
 	AddTrackCommand,
@@ -45,8 +46,8 @@ import {
 	RetimeKeyframeCommand,
 	UpdateScalarKeyframeCurveCommand,
 	AddClipEffectCommand,
-	DeleteCustomMaskPointsCommand,
-	InsertCustomMaskPointCommand,
+	DeleteFreeformPathMaskPointsCommand,
+	InsertFreeformPathMaskPointCommand,
 	RemoveClipEffectCommand,
 	UpdateClipEffectParamsCommand,
 	ToggleClipEffectCommand,
@@ -67,11 +68,12 @@ export class TimelineManager {
 	private listeners = new Set<() => void>();
 	private previewOverlay = new Map<string, Partial<TimelineElement>>();
 	private previewTracks: SceneTracks | null = null;
+	public readonly dragSource = new TimelineDragSource();
 
 	constructor(private editor: EditorCore) {}
 
 	addTrack({ type, index }: { type: TrackType; index?: number }): string {
-		const command = new AddTrackCommand(type, index);
+		const command = new AddTrackCommand({ type, index });
 		this.editor.command.execute({ command });
 		return command.getTrackId();
 	}
@@ -95,10 +97,10 @@ export class TimelineManager {
 		pushHistory = true,
 	}: {
 		elementId: string;
-		trimStart: number;
-		trimEnd: number;
-		startTime?: number;
-		duration?: number;
+		trimStart: MediaTime;
+		trimEnd: MediaTime;
+		startTime?: MediaTime;
+		duration?: MediaTime;
 		pushHistory?: boolean;
 	}): void {
 		const trackId = this.findTrackIdForElement({ elementId });
@@ -188,7 +190,7 @@ export class TimelineManager {
 		retainSide = "both",
 	}: {
 		elements: { trackId: string; elementId: string }[];
-		splitTime: number;
+		splitTime: MediaTime;
 		retainSide?: "both" | "left" | "right";
 	}): { trackId: string; elementId: string }[] {
 		const command = new SplitElementsCommand({
@@ -200,20 +202,20 @@ export class TimelineManager {
 		return command.getRightSideElements();
 	}
 
-	getTotalDuration(): number {
+	getTotalDuration(): MediaTime {
 		const activeScene = this.editor.scenes.getActiveSceneOrNull();
 		if (!activeScene) {
-			return 0;
+			return ZERO_MEDIA_TIME;
 		}
 
 		return calculateTotalDuration({ tracks: activeScene.tracks });
 	}
 
-	getLastFrameTime(): number {
+	getLastFrameTime(): MediaTime {
 		const duration = this.getTotalDuration();
 		const fps = this.editor.project.getActive()?.settings.fps;
 		if (!fps || duration <= 0) return duration;
-		return lastFrameTime({ duration, rate: fps }) ?? duration;
+		return lastFrameMediaTime({ duration, fps });
 	}
 
 	getTrackById({ trackId }: { trackId: string }): TimelineTrack | null {
@@ -347,7 +349,7 @@ export class TimelineManager {
 		this.editor.command.execute({ command });
 	}
 
-	deleteCustomMaskPoints({
+	deleteFreeformPathMaskPoints({
 		trackId,
 		elementId,
 		maskId,
@@ -361,7 +363,7 @@ export class TimelineManager {
 		if (pointIds.length === 0) {
 			return;
 		}
-		const command = new DeleteCustomMaskPointsCommand({
+		const command = new DeleteFreeformPathMaskPointsCommand({
 			trackId,
 			elementId,
 			maskId,
@@ -370,7 +372,7 @@ export class TimelineManager {
 		this.editor.command.execute({ command });
 	}
 
-	insertCustomMaskPoint({
+	insertFreeformPathMaskPoint({
 		trackId,
 		elementId,
 		maskId,
@@ -385,7 +387,7 @@ export class TimelineManager {
 		canvasPoint: { x: number; y: number };
 		bounds: ElementBounds;
 	}): void {
-		const command = new InsertCustomMaskPointCommand({
+		const command = new InsertFreeformPathMaskPointCommand({
 			trackId,
 			elementId,
 			maskId,
@@ -483,8 +485,8 @@ export class TimelineManager {
 			trackId: string;
 			elementId: string;
 			propertyPath: AnimationPath;
-			time: number;
-			value: AnimationValue;
+			time: MediaTime;
+			value: ParamValue;
 			interpolation?: AnimationInterpolation;
 			keyframeId?: string;
 		}>;
@@ -535,7 +537,7 @@ export class TimelineManager {
 		// Pre-sample values at playhead for each (element, property) pair.
 		// This preserves "what you see is what you get" when all keyframes are deleted.
 		const playheadTime = this.editor.playback.getCurrentTime();
-		const valueAtPlayheadMap = new Map<string, AnimationValue | null>();
+		const valueAtPlayheadMap = new Map<string, ParamValue | null>();
 
 		for (const { trackId, elementId, propertyPath } of keyframes) {
 			const key = `${elementId}:${propertyPath}`;
@@ -556,9 +558,7 @@ export class TimelineManager {
 			});
 
 			const target = resolveAnimationTarget({ element, path: propertyPath });
-			const baseValue =
-				(target?.getBaseValue() as AnimationValueForPath<AnimationPath> | null) ??
-				null;
+			const baseValue = target?.getBaseValue() ?? null;
 			if (baseValue === null) {
 				valueAtPlayheadMap.set(key, null);
 				continue;
@@ -600,7 +600,7 @@ export class TimelineManager {
 		elementId: string;
 		propertyPath: AnimationPath;
 		keyframeId: string;
-		time: number;
+		time: MediaTime;
 	}): void {
 		const command = new RetimeKeyframeCommand({
 			trackId,
@@ -658,7 +658,7 @@ export class TimelineManager {
 		elementId: string;
 		effectId: string;
 		paramKey: string;
-		time: number;
+		time: MediaTime;
 		value: number;
 		interpolation?: "linear" | "hold";
 		keyframeId?: string;
@@ -706,11 +706,11 @@ export class TimelineManager {
 	previewElements({
 		updates,
 	}: {
-		updates: Array<{
+		updates: readonly {
 			trackId: string;
 			elementId: string;
 			updates: Partial<TimelineElement>;
-		}>;
+		}[];
 	}): void {
 		let changedOverlayCount = 0;
 		for (const { elementId, updates: elementUpdates } of updates) {
@@ -749,7 +749,10 @@ export class TimelineManager {
 		}
 		const afterTracks =
 			this.previewTracks ?? this.applyPreviewOverlay(committedTracks);
-		const command = new TracksSnapshotCommand(committedTracks, afterTracks);
+		const command = new TracksSnapshotCommand({
+			before: committedTracks,
+			after: afterTracks,
+		});
 		this.editor.command.push({ command });
 		this.previewOverlay.clear();
 		this.previewTracks = null;
@@ -838,7 +841,7 @@ export class TimelineManager {
 	}): void {
 		const shouldMute = elements.some(({ trackId, elementId }) => {
 			const element = this.getElementByRef({ trackId, elementId });
-			return element && canElementHaveAudio(element) && !element.muted;
+			return element && canElementHaveAudio(element) && !isElementMuted({ element });
 		});
 
 		const nextUpdates = elements.flatMap(({ trackId, elementId }) => {
@@ -851,7 +854,7 @@ export class TimelineManager {
 				{
 					trackId,
 					elementId,
-					patch: { muted: shouldMute },
+					patch: { params: { muted: shouldMute } },
 				},
 			];
 		});

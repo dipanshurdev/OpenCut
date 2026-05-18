@@ -11,16 +11,16 @@ import {
 	TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useEditor } from "@/editor/use-editor";
-import { clearDragData, setDragData } from "@/timeline/drag-data";
 import type { TimelineDragData } from "@/timeline/drag";
 import { cn } from "@/utils/ui";
+import type { MediaTime } from "@/wasm";
 
 export interface DraggableItemProps {
 	name: string;
 	preview: ReactNode;
 	dragData: TimelineDragData;
 	onDragStart?: ({ e }: { e: React.DragEvent }) => void;
-	onAddToTimeline?: ({ currentTime }: { currentTime: number }) => void;
+	onAddToTimeline?: ({ currentTime }: { currentTime: MediaTime }) => void;
 	aspectRatio?: number;
 	className?: string;
 	containerClassName?: string;
@@ -73,21 +73,23 @@ export function DraggableItem({
 		};
 	}, [isDragging]);
 
-	const handleDragStart = (e: React.DragEvent) => {
-		e.dataTransfer.setDragImage(emptyImg, 0, 0);
+	const handleDragStart = (event: React.DragEvent) => {
+		event.dataTransfer.setDragImage(emptyImg, 0, 0);
 
-		setDragData({ dataTransfer: e.dataTransfer, dragData });
-		e.dataTransfer.effectAllowed = "copy";
+		editor.timeline.dragSource.begin({
+			dataTransfer: event.dataTransfer,
+			dragData,
+		});
 
-		setDragPosition({ x: e.clientX, y: e.clientY });
+		setDragPosition({ x: event.clientX, y: event.clientY });
 		setIsDragging(true);
 
-		onDragStart?.({ e });
+		onDragStart?.({ e: event });
 	};
 
 	const handleDragEnd = () => {
 		setIsDragging(false);
-		clearDragData();
+		editor.timeline.dragSource.end();
 	};
 
 	return (

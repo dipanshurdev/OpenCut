@@ -1,8 +1,14 @@
 import type { FrameRate } from "opencut-wasm";
 import type { AnyBaseNode } from "./nodes/base-node";
+import { createCanvasSurface } from "./canvas-utils";
 import { buildFrameDescriptor } from "./compositor/frame-descriptor";
 import { wasmCompositor } from "./compositor/wasm-compositor";
 import { resolveRenderTree } from "./resolve";
+import {
+	measureSpanAsync,
+	measureSpanSync,
+	onRenderPerfFrameComplete,
+} from "@/diagnostics/render-perf";
 
 export type CanvasRendererParams = {
 	width: number;
@@ -11,8 +17,8 @@ export type CanvasRendererParams = {
 };
 
 export class CanvasRenderer {
-	canvas: OffscreenCanvas | HTMLCanvasElement;
-	context: OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D;
+	canvas: OffscreenCanvas;
+	context: OffscreenCanvasRenderingContext2D;
 	width: number;
 	height: number;
 	fps: FrameRate;
@@ -22,22 +28,9 @@ export class CanvasRenderer {
 		this.height = height;
 		this.fps = fps;
 
-		try {
-			this.canvas = new OffscreenCanvas(width, height);
-		} catch {
-			this.canvas = document.createElement("canvas");
-			this.canvas.width = width;
-			this.canvas.height = height;
-		}
-
-		const context = this.canvas.getContext("2d");
-		if (!context) {
-			throw new Error("Failed to get canvas context");
-		}
-
-		this.context = context as
-			| OffscreenCanvasRenderingContext2D
-			| CanvasRenderingContext2D;
+		const surface = createCanvasSurface({ width, height });
+		this.canvas = surface.canvas;
+		this.context = surface.context;
 	}
 
 	getOutputCanvas(): HTMLCanvasElement {
@@ -52,34 +45,32 @@ export class CanvasRenderer {
 		this.width = width;
 		this.height = height;
 
-		if (this.canvas instanceof OffscreenCanvas) {
-			this.canvas = new OffscreenCanvas(width, height);
-		} else {
-			this.canvas.width = width;
-			this.canvas.height = height;
-		}
-
-		const context = this.canvas.getContext("2d");
-		if (!context) {
-			throw new Error("Failed to get canvas context");
-		}
-		this.context = context as
-			| OffscreenCanvasRenderingContext2D
-			| CanvasRenderingContext2D;
+		const surface = createCanvasSurface({ width, height });
+		this.canvas = surface.canvas;
+		this.context = surface.context;
 	}
 
 	async render({ node, time }: { node: AnyBaseNode; time: number }) {
-		await resolveRenderTree({ node, renderer: this, time });
-		const { frame, textures } = await buildFrameDescriptor({
-			node,
-			renderer: this,
+		await measureSpanAsync({
+			name: "resolve",
+			fn: () => resolveRenderTree({ node, renderer: this, time }),
+		});
+		const { frame, textures } = await measureSpanAsync({
+			name: "buildFrame",
+			fn: () => buildFrameDescriptor({ node, renderer: this }),
 		});
 		wasmCompositor.ensureInitialized({
 			width: this.width,
 			height: this.height,
 		});
-		wasmCompositor.syncTextures(textures);
-		wasmCompositor.render(frame);
+		measureSpanSync({
+			name: "syncTextures",
+			fn: () => wasmCompositor.syncTextures(textures),
+		});
+		measureSpanSync({
+			name: "renderFrame",
+			fn: () => wasmCompositor.render(frame),
+		});
 	}
 
 	async renderToCanvas({
@@ -98,12 +89,17 @@ export class CanvasRenderer {
 			throw new Error("Failed to get target canvas context");
 		}
 
-		ctx.drawImage(
-			wasmCompositor.getCanvas(),
-			0,
-			0,
-			targetCanvas.width,
-			targetCanvas.height,
-		);
+		measureSpanSync({
+			name: "drawImage",
+			fn: () =>
+				ctx.drawImage(
+					wasmCompositor.getCanvas(),
+					0,
+					0,
+					targetCanvas.width,
+					targetCanvas.height,
+				),
+		});
+		onRenderPerfFrameComplete();
 	}
 }

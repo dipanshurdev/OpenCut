@@ -1,21 +1,28 @@
 import { EditorCore } from "@/core";
 import { Command, type CommandResult } from "@/commands/base-command";
-import { resolveAnimationTarget, upsertPathKeyframe } from "@/animation";
+import { upsertPathKeyframe } from "@/animation";
 import { updateElementInSceneTracks } from "@/timeline";
 import type { SceneTracks } from "@/timeline";
+import { resolveAnimationTarget } from "@/timeline/animation-targets";
 import type {
 	AnimationPath,
 	AnimationInterpolation,
-	AnimationValue,
 } from "@/animation/types";
+import type { ParamValue } from "@/params";
+import {
+	type MediaTime,
+	maxMediaTime,
+	minMediaTime,
+	ZERO_MEDIA_TIME,
+} from "@/wasm";
 
 export class UpsertKeyframeCommand extends Command {
 	private savedState: SceneTracks | null = null;
 	private readonly trackId: string;
 	private readonly elementId: string;
 	private readonly propertyPath: AnimationPath;
-	private readonly time: number;
-	private readonly value: AnimationValue;
+	private readonly time: MediaTime;
+	private readonly value: ParamValue;
 	private readonly interpolation: AnimationInterpolation | undefined;
 	private readonly keyframeId: string | undefined;
 
@@ -31,8 +38,8 @@ export class UpsertKeyframeCommand extends Command {
 		trackId: string;
 		elementId: string;
 		propertyPath: AnimationPath;
-		time: number;
-		value: AnimationValue;
+		time: MediaTime;
+		value: ParamValue;
 		interpolation?: AnimationInterpolation;
 		keyframeId?: string;
 	}) {
@@ -63,7 +70,10 @@ export class UpsertKeyframeCommand extends Command {
 					return element;
 				}
 
-				const boundedTime = Math.max(0, Math.min(this.time, element.duration));
+				const boundedTime = maxMediaTime({
+					a: ZERO_MEDIA_TIME,
+					b: minMediaTime({ a: this.time, b: element.duration }),
+				});
 				return {
 					...element,
 					animations: upsertPathKeyframe({
@@ -73,8 +83,7 @@ export class UpsertKeyframeCommand extends Command {
 						value: this.value,
 						interpolation: this.interpolation,
 						keyframeId: this.keyframeId,
-						kind: target.kind,
-						defaultInterpolation: target.defaultInterpolation,
+						channelLayout: target.channelLayout,
 						coerceValue: target.coerceValue,
 					}),
 				};

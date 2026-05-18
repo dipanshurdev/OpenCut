@@ -1,6 +1,7 @@
 import { DEFAULT_NEW_ELEMENT_DURATION } from "@/timeline/creation";
 import type { TTimelineViewState } from "@/project/types";
 import type { BlendMode, Transform } from "@/rendering";
+import { ZERO_MEDIA_TIME } from "@/wasm";
 import type { TextElement } from "./types";
 
 const defaultTransform: Transform = {
@@ -30,32 +31,42 @@ const defaultTextBackground = {
 const defaultTextElement: Omit<TextElement, "id"> = {
 	type: "text",
 	name: "Text",
-	content: "Default text",
-	fontSize: 15,
-	fontFamily: "Arial",
-	color: "#ffffff",
-	background: { ...defaultTextBackground },
-	textAlign: "center",
-	fontWeight: "normal",
-	fontStyle: "normal",
-	textDecoration: "none",
-	letterSpacing: defaultTextLetterSpacing,
-	lineHeight: defaultTextLineHeight,
 	duration: DEFAULT_NEW_ELEMENT_DURATION,
-	startTime: 0,
-	trimStart: 0,
-	trimEnd: 0,
-	transform: {
-		...defaultTransform,
-		position: { ...defaultTransform.position },
+	startTime: ZERO_MEDIA_TIME,
+	trimStart: ZERO_MEDIA_TIME,
+	trimEnd: ZERO_MEDIA_TIME,
+	params: {
+		content: "Default text",
+		fontSize: 15,
+		fontFamily: "Arial",
+		color: "#ffffff",
+		textAlign: "center",
+		fontWeight: "normal",
+		fontStyle: "normal",
+		textDecoration: "none",
+		letterSpacing: defaultTextLetterSpacing,
+		lineHeight: defaultTextLineHeight,
+		"background.enabled": defaultTextBackground.enabled,
+		"background.color": defaultTextBackground.color,
+		"background.cornerRadius": defaultTextBackground.cornerRadius,
+		"background.paddingX": defaultTextBackground.paddingX,
+		"background.paddingY": defaultTextBackground.paddingY,
+		"background.offsetX": defaultTextBackground.offsetX,
+		"background.offsetY": defaultTextBackground.offsetY,
+		"transform.positionX": defaultTransform.position.x,
+		"transform.positionY": defaultTransform.position.y,
+		"transform.scaleX": defaultTransform.scaleX,
+		"transform.scaleY": defaultTransform.scaleY,
+		"transform.rotate": defaultTransform.rotate,
+		opacity: defaultOpacity,
+		blendMode: defaultBlendMode,
 	},
-	opacity: defaultOpacity,
 };
 
 const defaultTimelineViewState: TTimelineViewState = {
 	zoomLevel: 1,
 	scrollLeft: 0,
-	playheadTime: 0,
+	playheadTime: ZERO_MEDIA_TIME,
 };
 
 export const DEFAULTS = {

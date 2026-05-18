@@ -1,11 +1,20 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useState } from "react";
 import { useTimelineStore } from "@/timeline/timeline-store";
 import { useActionHandler } from "@/actions/use-action-handler";
 import { useEditor } from "@/editor/use-editor";
 import { useElementSelection } from "@/timeline/hooks/element/use-element-selection";
-import { TICKS_PER_SECOND } from "@/wasm";
+import {
+	addMediaTime,
+	maxMediaTime,
+	mediaTime,
+	mediaTimeFromSeconds,
+	minMediaTime,
+	subMediaTime,
+	TICKS_PER_SECOND,
+	ZERO_MEDIA_TIME,
+} from "@/wasm";
 import { useKeyframeSelection } from "@/timeline/hooks/element/use-keyframe-selection";
 import { getElementsAtTime, hasMediaId } from "@/timeline";
 import { cancelInteraction } from "@/editor/cancel-interaction";
@@ -16,6 +25,7 @@ import {
 	clearActiveScope,
 	type ScopeEntry,
 } from "@/selection/scope";
+import { useCommittedRef } from "@/hooks/use-committed-ref";
 
 export function useEditorActions() {
 	const editor = useEditor();
@@ -27,47 +37,34 @@ export function useEditorActions() {
 	const toggleSnapping = useTimelineStore((s) => s.toggleSnapping);
 	const rippleEditingEnabled = useTimelineStore((s) => s.rippleEditingEnabled);
 	const toggleRippleEditing = useTimelineStore((s) => s.toggleRippleEditing);
-	const hasTimelineSelectionRef = useRef(false);
-	const clearTimelineSelectionRef = useRef(() => {});
-	const clearTimelineActiveSelectionRef = useRef(() => {});
-	const timelineScopeRef = useRef<ScopeEntry | null>(null);
 	const hasTimelineSelection =
 		selectedElements.length > 0 ||
 		selectedKeyframes.length > 0 ||
 		selectedMaskPointSelection !== null;
-
-	hasTimelineSelectionRef.current = hasTimelineSelection;
-	clearTimelineSelectionRef.current = () => {
+	const hasTimelineSelectionRef = useCommittedRef(hasTimelineSelection);
+	const clearTimelineSelectionRef = useCommittedRef(() => {
 		editor.selection.clearSelection();
-	};
-	clearTimelineActiveSelectionRef.current = () => {
+	});
+	const clearTimelineActiveSelectionRef = useCommittedRef(() => {
 		editor.selection.clearMostSpecificSelection();
-	};
-
-	if (!timelineScopeRef.current) {
-		timelineScopeRef.current = {
-			hasSelection: () => hasTimelineSelectionRef.current,
-			clear: () => {
-				clearTimelineSelectionRef.current();
-			},
-			clearActive: () => {
-				clearTimelineActiveSelectionRef.current();
-			},
-		};
-	}
+	});
+	const [timelineScope] = useState<ScopeEntry>(() => ({
+		hasSelection: () => hasTimelineSelectionRef.current,
+		clear: () => {
+			clearTimelineSelectionRef.current();
+		},
+		clearActive: () => {
+			clearTimelineActiveSelectionRef.current();
+		},
+	}));
 
 	useEffect(() => {
 		if (!hasTimelineSelection) {
 			return;
 		}
 
-		const timelineScope = timelineScopeRef.current;
-		if (!timelineScope) {
-			return;
-		}
-
 		return activateScope({ entry: timelineScope });
-	}, [hasTimelineSelection]);
+	}, [hasTimelineSelection, timelineScope]);
 
 	useActionHandler(
 		"toggle-play",
@@ -83,7 +80,7 @@ export function useEditorActions() {
 			if (editor.playback.getIsPlaying()) {
 				editor.playback.toggle();
 			}
-			editor.playback.seek({ time: 0 });
+			editor.playback.seek({ time: ZERO_MEDIA_TIME });
 		},
 		undefined,
 	);
@@ -92,11 +89,15 @@ export function useEditorActions() {
 		"seek-forward",
 		(args) => {
 			const seconds = args?.seconds ?? 1;
+			const delta = mediaTimeFromSeconds({ seconds });
 			editor.playback.seek({
-				time: Math.min(
-					editor.timeline.getTotalDuration(),
-					editor.playback.getCurrentTime() + seconds,
-				),
+				time: minMediaTime({
+					a: editor.timeline.getTotalDuration(),
+					b: addMediaTime({
+						a: editor.playback.getCurrentTime(),
+						b: delta,
+					}),
+				}),
 			});
 		},
 		undefined,
@@ -106,8 +107,15 @@ export function useEditorActions() {
 		"seek-backward",
 		(args) => {
 			const seconds = args?.seconds ?? 1;
+			const delta = mediaTimeFromSeconds({ seconds });
 			editor.playback.seek({
-				time: Math.max(0, editor.playback.getCurrentTime() - seconds),
+				time: maxMediaTime({
+					a: ZERO_MEDIA_TIME,
+					b: subMediaTime({
+						a: editor.playback.getCurrentTime(),
+						b: delta,
+					}),
+				}),
 			});
 		},
 		undefined,
@@ -117,14 +125,19 @@ export function useEditorActions() {
 		"frame-step-forward",
 		() => {
 			const fps = editor.project.getActive().settings.fps;
-			const ticksPerFrame = Math.round(
-				(TICKS_PER_SECOND * fps.denominator) / fps.numerator,
-			);
-			editor.playback.seek({
-				time: Math.min(
-					editor.timeline.getTotalDuration(),
-					editor.playback.getCurrentTime() + ticksPerFrame,
+			const ticksPerFrame = mediaTime({
+				ticks: Math.round(
+					(TICKS_PER_SECOND * fps.denominator) / fps.numerator,
 				),
+			});
+			editor.playback.seek({
+				time: minMediaTime({
+					a: editor.timeline.getTotalDuration(),
+					b: addMediaTime({
+						a: editor.playback.getCurrentTime(),
+						b: ticksPerFrame,
+					}),
+				}),
 			});
 		},
 		undefined,
@@ -134,11 +147,19 @@ export function useEditorActions() {
 		"frame-step-backward",
 		() => {
 			const fps = editor.project.getActive().settings.fps;
-			const ticksPerFrame = Math.round(
-				(TICKS_PER_SECOND * fps.denominator) / fps.numerator,
-			);
+			const ticksPerFrame = mediaTime({
+				ticks: Math.round(
+					(TICKS_PER_SECOND * fps.denominator) / fps.numerator,
+				),
+			});
 			editor.playback.seek({
-				time: Math.max(0, editor.playback.getCurrentTime() - ticksPerFrame),
+				time: maxMediaTime({
+					a: ZERO_MEDIA_TIME,
+					b: subMediaTime({
+						a: editor.playback.getCurrentTime(),
+						b: ticksPerFrame,
+					}),
+				}),
 			});
 		},
 		undefined,
@@ -148,11 +169,15 @@ export function useEditorActions() {
 		"jump-forward",
 		(args) => {
 			const seconds = args?.seconds ?? 5;
+			const delta = mediaTimeFromSeconds({ seconds });
 			editor.playback.seek({
-				time: Math.min(
-					editor.timeline.getTotalDuration(),
-					editor.playback.getCurrentTime() + seconds,
-				),
+				time: minMediaTime({
+					a: editor.timeline.getTotalDuration(),
+					b: addMediaTime({
+						a: editor.playback.getCurrentTime(),
+						b: delta,
+					}),
+				}),
 			});
 		},
 		undefined,
@@ -162,8 +187,15 @@ export function useEditorActions() {
 		"jump-backward",
 		(args) => {
 			const seconds = args?.seconds ?? 5;
+			const delta = mediaTimeFromSeconds({ seconds });
 			editor.playback.seek({
-				time: Math.max(0, editor.playback.getCurrentTime() - seconds),
+				time: maxMediaTime({
+					a: ZERO_MEDIA_TIME,
+					b: subMediaTime({
+						a: editor.playback.getCurrentTime(),
+						b: delta,
+					}),
+				}),
 			});
 		},
 		undefined,
@@ -172,7 +204,7 @@ export function useEditorActions() {
 	useActionHandler(
 		"goto-start",
 		() => {
-			editor.playback.seek({ time: 0 });
+			editor.playback.seek({ time: ZERO_MEDIA_TIME });
 		},
 		undefined,
 	);
@@ -273,7 +305,7 @@ export function useEditorActions() {
 					if (!selectedMaskPointSelection) {
 						return;
 					}
-					editor.timeline.deleteCustomMaskPoints({
+					editor.timeline.deleteFreeformPathMaskPoints({
 						trackId: selectedMaskPointSelection.trackId,
 						elementId: selectedMaskPointSelection.elementId,
 						maskId: selectedMaskPointSelection.maskId,

@@ -6,29 +6,19 @@ import {
 	snapScale,
 	snapScaleAxes,
 	type ScaleEdgePreference,
-	type SnapLine,
 } from "@/preview/preview-snap";
-import type { RectangleMaskParams, SplitMaskParams } from "@/masks/types";
+import type {
+	MaskHandleId,
+	MaskSnapArgs,
+	MaskSnapResult,
+	RectangleMaskParams,
+	SplitMaskParams,
+} from "@/masks/types";
 import {
-	isRectangleMaskParams,
 	getMaskSnapGeometry,
 	setMaskLocalCenter,
 	toGlobalMaskSnapLines,
 } from "./geometry";
-
-type SharedMaskParams = SplitMaskParams | RectangleMaskParams;
-
-type MaskSnapResult<TParams extends SharedMaskParams> = {
-	params: TParams;
-	activeLines: SnapLine[];
-};
-
-const CORNER_SIZE_HANDLES = new Set([
-	"top-left",
-	"top-right",
-	"bottom-left",
-	"bottom-right",
-]);
 
 function getClampedRatio({
 	next,
@@ -45,28 +35,27 @@ function getClampedRatio({
 function getPreferredEdges({
 	handleId,
 }: {
-	handleId: string;
+	handleId: MaskHandleId;
 }): ScaleEdgePreference | undefined {
-	const preferredEdges = {
-		left:
-			handleId === "left" ||
-			handleId === "top-left" ||
-			handleId === "bottom-left",
-		right:
-			handleId === "right" ||
-			handleId === "top-right" ||
-			handleId === "bottom-right",
-		top:
-			handleId === "top" || handleId === "top-left" || handleId === "top-right",
-		bottom:
-			handleId === "bottom" ||
-			handleId === "bottom-left" ||
-			handleId === "bottom-right",
-	} satisfies ScaleEdgePreference;
+	if (handleId.kind === "edge") {
+		return {
+			left: handleId.side === "left",
+			right: handleId.side === "right",
+			top: handleId.side === "top",
+			bottom: handleId.side === "bottom",
+		};
+	}
 
-	return Object.values(preferredEdges).some(Boolean)
-		? preferredEdges
-		: undefined;
+	if (handleId.kind === "corner") {
+		return {
+			left: handleId.corner.x === "left",
+			right: handleId.corner.x === "right",
+			top: handleId.corner.y === "top",
+			bottom: handleId.corner.y === "bottom",
+		};
+	}
+
+	return undefined;
 }
 
 function snapMaskPosition({
@@ -75,11 +64,33 @@ function snapMaskPosition({
 	canvasSize,
 	snapThreshold,
 }: {
-	proposedParams: SharedMaskParams;
+	proposedParams: RectangleMaskParams;
 	bounds: ElementBounds;
 	canvasSize: { width: number; height: number };
 	snapThreshold: { x: number; y: number };
-}): MaskSnapResult<SharedMaskParams> {
+}): MaskSnapResult<RectangleMaskParams>;
+function snapMaskPosition({
+	proposedParams,
+	bounds,
+	canvasSize,
+	snapThreshold,
+}: {
+	proposedParams: SplitMaskParams;
+	bounds: ElementBounds;
+	canvasSize: { width: number; height: number };
+	snapThreshold: { x: number; y: number };
+}): MaskSnapResult<SplitMaskParams>;
+function snapMaskPosition({
+	proposedParams,
+	bounds,
+	canvasSize,
+	snapThreshold,
+}: {
+	proposedParams: RectangleMaskParams | SplitMaskParams;
+	bounds: ElementBounds;
+	canvasSize: { width: number; height: number };
+	snapThreshold: { x: number; y: number };
+}): MaskSnapResult<RectangleMaskParams | SplitMaskParams> {
 	const geometry = getMaskSnapGeometry({
 		params: proposedParams,
 		bounds,
@@ -115,12 +126,18 @@ function snapMaskPosition({
 function snapMaskRotation({
 	proposedParams,
 }: {
-	proposedParams: SharedMaskParams;
-}): MaskSnapResult<SharedMaskParams> {
-	if (typeof proposedParams.rotation !== "number") {
-		return { params: proposedParams, activeLines: [] };
-	}
-
+	proposedParams: RectangleMaskParams;
+}): MaskSnapResult<RectangleMaskParams>;
+function snapMaskRotation({
+	proposedParams,
+}: {
+	proposedParams: SplitMaskParams;
+}): MaskSnapResult<SplitMaskParams>;
+function snapMaskRotation({
+	proposedParams,
+}: {
+	proposedParams: RectangleMaskParams | SplitMaskParams;
+}): MaskSnapResult<RectangleMaskParams | SplitMaskParams> {
 	const { snappedRotation } = snapRotation({
 		proposedRotation: proposedParams.rotation,
 	});
@@ -142,20 +159,13 @@ function snapBoxMaskSize({
 	canvasSize,
 	snapThreshold,
 }: {
-	handleId: string;
-	startParams: SharedMaskParams;
-	proposedParams: SharedMaskParams;
+	handleId: MaskHandleId;
+	startParams: RectangleMaskParams;
+	proposedParams: RectangleMaskParams;
 	bounds: ElementBounds;
 	canvasSize: { width: number; height: number };
 	snapThreshold: { x: number; y: number };
-}): MaskSnapResult<SharedMaskParams> {
-	if (
-		!isRectangleMaskParams(startParams) ||
-		!isRectangleMaskParams(proposedParams)
-	) {
-		return { params: proposedParams, activeLines: [] };
-	}
-
+}): MaskSnapResult<RectangleMaskParams> {
 	const geometry = getMaskSnapGeometry({
 		params: proposedParams,
 		bounds,
@@ -171,7 +181,10 @@ function snapBoxMaskSize({
 		Math.max(startParams.height, MIN_MASK_DIMENSION) * bounds.height;
 	const preferredEdges = getPreferredEdges({ handleId });
 
-	if (handleId === "right" || handleId === "left") {
+	if (
+		handleId.kind === "edge" &&
+		(handleId.side === "right" || handleId.side === "left")
+	) {
 		const proposedScaleX = getClampedRatio({
 			next: proposedParams.width,
 			base: startParams.width,
@@ -201,7 +214,10 @@ function snapBoxMaskSize({
 		};
 	}
 
-	if (handleId === "top" || handleId === "bottom") {
+	if (
+		handleId.kind === "edge" &&
+		(handleId.side === "top" || handleId.side === "bottom")
+	) {
 		const proposedScaleY = getClampedRatio({
 			next: proposedParams.height,
 			base: startParams.height,
@@ -234,7 +250,7 @@ function snapBoxMaskSize({
 		};
 	}
 
-	if (handleId === "scale") {
+	if (handleId.kind === "scale") {
 		const baseScale = Math.max(startParams.scale, MIN_MASK_DIMENSION);
 		const proposedScale = getClampedRatio({
 			next: proposedParams.scale,
@@ -264,7 +280,7 @@ function snapBoxMaskSize({
 		};
 	}
 
-	if (CORNER_SIZE_HANDLES.has(handleId)) {
+	if (handleId.kind === "corner") {
 		const proposedScale = getClampedRatio({
 			next: proposedParams.width,
 			base: startParams.width,
@@ -297,7 +313,7 @@ function snapBoxMaskSize({
 	return { params: proposedParams, activeLines: [] };
 }
 
-export function snapMaskInteraction<TParams extends SharedMaskParams>({
+export function snapBoxMaskInteraction({
 	handleId,
 	startParams,
 	proposedParams,
@@ -305,24 +321,24 @@ export function snapMaskInteraction<TParams extends SharedMaskParams>({
 	canvasSize,
 	snapThreshold,
 }: {
-	handleId: string;
-	startParams: TParams;
-	proposedParams: TParams;
+	handleId: MaskHandleId;
+	startParams: RectangleMaskParams;
+	proposedParams: RectangleMaskParams;
 	bounds: ElementBounds;
 	canvasSize: { width: number; height: number };
 	snapThreshold: { x: number; y: number };
-}): MaskSnapResult<TParams> {
-	if (handleId === "position") {
+}): MaskSnapResult<RectangleMaskParams> {
+	if (handleId.kind === "position") {
 		return snapMaskPosition({
 			proposedParams,
 			bounds,
 			canvasSize,
 			snapThreshold,
-		}) as MaskSnapResult<TParams>;
+		});
 	}
 
-	if (handleId === "rotation") {
-		return snapMaskRotation({ proposedParams }) as MaskSnapResult<TParams>;
+	if (handleId.kind === "rotation") {
+		return snapMaskRotation({ proposedParams });
 	}
 
 	return snapBoxMaskSize({
@@ -332,5 +348,28 @@ export function snapMaskInteraction<TParams extends SharedMaskParams>({
 		bounds,
 		canvasSize,
 		snapThreshold,
-	}) as MaskSnapResult<TParams>;
+	});
+}
+
+export function snapSplitMaskInteraction({
+	handleId,
+	proposedParams,
+	bounds,
+	canvasSize,
+	snapThreshold,
+}: MaskSnapArgs<SplitMaskParams>): MaskSnapResult<SplitMaskParams> {
+	if (handleId.kind === "position") {
+		return snapMaskPosition({
+			proposedParams,
+			bounds,
+			canvasSize,
+			snapThreshold,
+		});
+	}
+
+	if (handleId.kind === "rotation") {
+		return snapMaskRotation({ proposedParams });
+	}
+
+	return { params: proposedParams, activeLines: [] };
 }

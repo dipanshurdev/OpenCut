@@ -31,10 +31,11 @@ import {
 	ContextMenuSeparator,
 	ContextMenuTrigger,
 } from "@/components/ui/context-menu";
+import type { SelectionBoxBounds } from "@/selection/types";
 import type {
 	TimelineElement as TimelineElementType,
 	TimelineTrack,
-	ElementDragState,
+	ElementDragView,
 	VideoElement,
 	ImageElement,
 	AudioElement,
@@ -46,10 +47,10 @@ import {
 	getSourceAudioActionLabel,
 	isSourceAudioSeparated,
 } from "@/timeline/audio-separation";
-import { buildWaveformGainSamples } from "@/timeline/audio-state";
+import { buildWaveformGainSamples, isElementMuted } from "@/timeline/audio-state";
 import { getTimelinePixelsPerSecond } from "@/timeline";
 import { buildWaveformSourceKey } from "@/media/waveform-summary";
-import { TICKS_PER_SECOND } from "@/wasm/ticks";
+import { addMediaTime, type MediaTime, TICKS_PER_SECOND } from "@/wasm";
 import {
 	getActionDefinition,
 	type TAction,
@@ -96,7 +97,7 @@ const PixelsPerSecondContext = createContext<number | null>(null);
 const THUMBNAIL_ASPECT_RATIO = 16 / 9;
 
 interface KeyframeIndicator {
-	time: number;
+	time: MediaTime;
 	offsetPx: number;
 	keyframes: SelectedKeyframeRef[];
 }
@@ -112,11 +113,11 @@ export function buildKeyframeIndicator({
 	keyframe: ElementKeyframe;
 	trackId: string;
 	elementId: string;
-	displayedStartTime: number;
+	displayedStartTime: MediaTime;
 	zoomLevel: number;
 	elementLeft: number;
 }): {
-	time: number;
+	time: MediaTime;
 	offsetPx: number;
 	keyframeRef: SelectedKeyframeRef;
 } {
@@ -149,7 +150,7 @@ export function getKeyframeIndicators({
 	keyframes: ElementKeyframe[];
 	trackId: string;
 	elementId: string;
-	displayedStartTime: number;
+	displayedStartTime: MediaTime;
 	zoomLevel: number;
 	elementLeft: number;
 	elementWidth: number;
@@ -158,7 +159,7 @@ export function getKeyframeIndicators({
 		return [];
 	}
 
-	const keyframesByTime = new Map<number, KeyframeIndicator>();
+	const keyframesByTime = new Map<MediaTime, KeyframeIndicator>();
 	for (const keyframe of keyframes) {
 		const indicator = buildKeyframeIndicator({
 			keyframe,
@@ -185,7 +186,7 @@ export function getKeyframeIndicators({
 }
 
 export function getDisplayShortcut({ action }: { action: TAction }) {
-	const { defaultShortcuts } = getActionDefinition({ action });
+	const defaultShortcuts = getActionDefinition({ action }).defaultShortcuts;
 	if (!defaultShortcuts?.length) {
 		return "";
 	}
@@ -206,15 +207,15 @@ interface TimelineElementProps {
 		track: TimelineTrack;
 		side: "left" | "right";
 	}) => void;
-	onElementMouseDown: (
-		event: React.MouseEvent,
-		element: TimelineElementType,
-	) => void;
-	onElementClick: (
-		event: React.MouseEvent,
-		element: TimelineElementType,
-	) => void;
-	dragState: ElementDragState;
+	onElementMouseDown: (params: {
+		event: React.MouseEvent;
+		element: TimelineElementType;
+	}) => void;
+	onElementClick: (params: {
+		event: React.MouseEvent;
+		element: TimelineElementType;
+	}) => void;
+	dragView: ElementDragView;
 	isDropTarget?: boolean;
 }
 
@@ -226,7 +227,7 @@ export function TimelineElement({
 	onResizeStart,
 	onElementMouseDown,
 	onElementClick,
-	dragState,
+	dragView,
 	isDropTarget = false,
 }: TimelineElementProps) {
 	const mediaAssets = useEditor((e) => e.media.getAssets());
@@ -252,15 +253,18 @@ export function TimelineElement({
 			selected.elementId === element.id && selected.trackId === track.id,
 	);
 
-	const isBeingDragged = dragState.dragElementIds.includes(element.id);
+	const isDragging = dragView.kind === "dragging";
+	const dragTimeOffset = isDragging
+		? dragView.memberTimeOffsets.get(element.id)
+		: undefined;
+	const isBeingDragged = dragTimeOffset !== undefined;
 	const dragOffsetY =
-		isBeingDragged && dragState.isDragging
-			? dragState.currentMouseY - dragState.startMouseY
+		isDragging && isBeingDragged
+			? dragView.currentMouseY - dragView.startMouseY
 			: 0;
-	const dragTimeOffset = dragState.dragTimeOffsets[element.id] ?? 0;
 	const elementStartTime =
-		isBeingDragged && dragState.isDragging
-			? dragState.currentTime + dragTimeOffset
+		isDragging && isBeingDragged
+			? addMediaTime({ a: dragView.currentTime, b: dragTimeOffset })
 			: renderElement.startTime;
 	const displayedStartTime = elementStartTime;
 	const displayedDuration = renderElement.duration;
@@ -331,7 +335,7 @@ export function TimelineElement({
 		}
 	};
 
-	const isMuted = canElementHaveAudio(element) && element.muted === true;
+	const isMuted = canElementHaveAudio(element) && isElementMuted({ element });
 	const canToggleCurrentSourceAudio =
 		selectedElements.length === 1 &&
 		isCurrentElementSelected &&
@@ -382,7 +386,7 @@ export function TimelineElement({
 									? `${baseTrackHeight + expansionHeight}px`
 									: "100%",
 							transform:
-								isBeingDragged && dragState.isDragging
+								isDragging && isBeingDragged
 									? `translate3d(0, ${dragOffsetY}px, 0)`
 									: undefined,
 						}}
@@ -527,14 +531,14 @@ function ElementInner({
 	isExpanded: boolean;
 	baseTrackHeight: number;
 	expandedContent: React.ReactNode;
-	onElementClick: (
-		event: React.MouseEvent,
-		element: TimelineElementType,
-	) => void;
-	onElementMouseDown: (
-		event: React.MouseEvent,
-		element: TimelineElementType,
-	) => void;
+	onElementClick: (params: {
+		event: React.MouseEvent;
+		element: TimelineElementType;
+	}) => void;
+	onElementMouseDown: (params: {
+		event: React.MouseEvent;
+		element: TimelineElementType;
+	}) => void;
 	onResizeStart: (params: {
 		event: React.MouseEvent;
 		element: TimelineElementType;
@@ -575,8 +579,8 @@ function ElementInner({
 						type="button"
 						tabIndex={-1}
 						className="absolute inset-0 size-full flex flex-col"
-						onClick={(event) => onElementClick(event, element)}
-						onMouseDown={(event) => onElementMouseDown(event, element)}
+						onClick={(event) => onElementClick({ event, element })}
+						onMouseDown={(event) => onElementMouseDown({ event, element })}
 					>
 						<div
 							className={cn(
@@ -661,7 +665,7 @@ function KeyframeIndicators({
 }: {
 	indicators: KeyframeIndicator[];
 	dragState: KeyframeDragState;
-	displayedStartTime: number;
+	displayedStartTime: MediaTime;
 	elementLeft: number;
 	onKeyframeMouseDown: (params: {
 		event: React.MouseEvent;
@@ -671,13 +675,13 @@ function KeyframeIndicators({
 		event: React.MouseEvent;
 		keyframes: SelectedKeyframeRef[];
 		orderedKeyframes: SelectedKeyframeRef[];
-		indicatorTime: number;
+		indicatorTime: MediaTime;
 	}) => void;
 	getVisualOffsetPx: (params: {
-		indicatorTime: number;
+		indicatorTime: MediaTime;
 		indicatorOffsetPx: number;
 		isBeingDragged: boolean;
-		displayedStartTime: number;
+		displayedStartTime: MediaTime;
 		elementLeft: number;
 	}) => number;
 }) {
@@ -755,7 +759,7 @@ function ExpandedKeyframeLanes({
 	keyframes: ElementKeyframe[];
 	trackId: string;
 	elementId: string;
-	displayedStartTime: number;
+	displayedStartTime: MediaTime;
 	zoomLevel: number;
 	elementLeft: number;
 	keyframeDragState: KeyframeDragState;
@@ -767,22 +771,20 @@ function ExpandedKeyframeLanes({
 	onLaneMouseDown: (event: React.MouseEvent) => void;
 	onLaneClick: (event: React.MouseEvent) => void;
 	selectionBox: {
-		startPos: { x: number; y: number };
-		currentPos: { x: number; y: number };
-		isActive: boolean;
+		bounds: SelectionBoxBounds;
 	} | null;
 	isBoxSelecting: boolean;
 	onKeyframeClick: (params: {
 		event: React.MouseEvent;
 		keyframes: SelectedKeyframeRef[];
 		orderedKeyframes: SelectedKeyframeRef[];
-		indicatorTime: number;
+		indicatorTime: MediaTime;
 	}) => void;
 	getVisualOffsetPx: (params: {
-		indicatorTime: number;
+		indicatorTime: MediaTime;
 		indicatorOffsetPx: number;
 		isBeingDragged: boolean;
-		displayedStartTime: number;
+		displayedStartTime: MediaTime;
 		elementLeft: number;
 	}) => number;
 }) {
@@ -805,8 +807,7 @@ function ExpandedKeyframeLanes({
 	);
 
 	return (
-		// biome-ignore lint/a11y/noStaticElementInteractions: expanded keyframe lanes are a pointer-only editing surface
-		// biome-ignore lint/a11y/useKeyWithClickEvents: expanded keyframe lanes are a pointer-only editing surface
+		// eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- spatial gesture surface (keyframe lanes); keyboard control over keyframes is via global timeline shortcuts, not per-element focus.
 		<div
 			ref={containerRef}
 			className="relative flex flex-col"
@@ -890,14 +891,7 @@ function ExpandedKeyframeLanes({
 					</div>
 				);
 			})}
-			{selectionBox && (
-				<SelectionBox
-					startPos={selectionBox.startPos}
-					currentPos={selectionBox.currentPos}
-					containerRef={containerRef}
-					isActive={selectionBox.isActive}
-				/>
-			)}
+			{selectionBox && <SelectionBox bounds={selectionBox.bounds} />}
 		</div>
 	);
 }
@@ -914,7 +908,9 @@ function TextElementContent({
 }) {
 	return (
 		<div className="flex size-full items-center justify-start pl-2">
-			<span className="truncate text-xs text-white">{element.content}</span>
+			<span className="truncate text-xs text-white">
+				{typeof element.params.content === "string" ? element.params.content : ""}
+			</span>
 		</div>
 	);
 }
@@ -1070,7 +1066,7 @@ function EffectsButton({
 		editor.selection.setSelectedElements({
 			elements: [{ trackId: track.id, elementId: element.id }],
 		});
-		setActiveTab(element.type, "effects");
+		setActiveTab({ elementType: element.type, tabId: "effects" });
 	};
 
 	return (

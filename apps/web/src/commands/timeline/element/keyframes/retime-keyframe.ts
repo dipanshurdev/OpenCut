@@ -1,9 +1,16 @@
 import { EditorCore } from "@/core";
-import { resolveAnimationTarget, retimeElementKeyframe } from "@/animation";
+import { retimeElementKeyframe } from "@/animation";
 import { Command, type CommandResult } from "@/commands/base-command";
 import { updateElementInSceneTracks } from "@/timeline";
 import type { AnimationPath } from "@/animation/types";
 import type { SceneTracks } from "@/timeline";
+import {
+	type MediaTime,
+	maxMediaTime,
+	minMediaTime,
+	ZERO_MEDIA_TIME,
+} from "@/wasm";
+import { resolveAnimationTarget } from "@/timeline/animation-targets";
 
 export class RetimeKeyframeCommand extends Command {
 	private savedState: SceneTracks | null = null;
@@ -11,7 +18,7 @@ export class RetimeKeyframeCommand extends Command {
 	private readonly elementId: string;
 	private readonly propertyPath: AnimationPath;
 	private readonly keyframeId: string;
-	private readonly nextTime: number;
+	private readonly nextTime: MediaTime;
 
 	constructor({
 		trackId,
@@ -24,7 +31,7 @@ export class RetimeKeyframeCommand extends Command {
 		elementId: string;
 		propertyPath: AnimationPath;
 		keyframeId: string;
-		nextTime: number;
+		nextTime: MediaTime;
 	}) {
 		super();
 		this.trackId = trackId;
@@ -47,7 +54,10 @@ export class RetimeKeyframeCommand extends Command {
 					return element;
 				}
 
-				const boundedTime = Math.max(0, Math.min(this.nextTime, element.duration));
+				const boundedTime = maxMediaTime({
+					a: ZERO_MEDIA_TIME,
+					b: minMediaTime({ a: this.nextTime, b: element.duration }),
+				});
 				return {
 					...element,
 					animations: retimeElementKeyframe({

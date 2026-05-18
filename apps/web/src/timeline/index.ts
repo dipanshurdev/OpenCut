@@ -1,3 +1,4 @@
+import { addMediaTime, type MediaTime, ZERO_MEDIA_TIME } from "@/wasm";
 import type { SceneTracks } from "./types";
 
 export * from "./types";
@@ -14,16 +15,19 @@ export function calculateTotalDuration({
 	tracks,
 }: {
 	tracks: SceneTracks;
-}): number {
+}): MediaTime {
 	const orderedTracks = [...tracks.overlay, tracks.main, ...tracks.audio];
-	if (orderedTracks.length === 0) return 0;
+	if (orderedTracks.length === 0) return ZERO_MEDIA_TIME;
 
-	const trackEndTimes = orderedTracks.map((track) =>
-		track.elements.reduce((maxEnd, element) => {
-			const elementEnd = element.startTime + element.duration;
-			return Math.max(maxEnd, elementEnd);
-		}, 0),
-	);
-
-	return Math.max(...trackEndTimes, 0);
+	let maxEnd: MediaTime = ZERO_MEDIA_TIME;
+	for (const track of orderedTracks) {
+		for (const element of track.elements) {
+			const elementEnd = addMediaTime({
+				a: element.startTime,
+				b: element.duration,
+			});
+			if (elementEnd > maxEnd) maxEnd = elementEnd;
+		}
+	}
+	return maxEnd;
 }

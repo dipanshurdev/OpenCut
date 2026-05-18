@@ -1,13 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePreviewViewport } from "@/preview/components/preview-viewport";
 import { useEditor } from "@/editor/use-editor";
 import { useShiftKey } from "@/hooks/use-shift-key";
-import { masksRegistry } from "@/masks";
-import {
-	parseCustomMaskHandleId,
-	parseCustomMaskSegmentHandleId,
-} from "@/masks/custom-path";
-import { appendPointToCustomMask } from "@/masks/definitions/custom";
+import { getMaskDefinition } from "@/masks";
+import { appendPointToFreeformPathMask } from "@/masks/freeform/definition";
 import {
 	getVisibleElementsWithBounds,
 	type ElementBounds,
@@ -17,14 +13,15 @@ import {
 	type SnapLine,
 } from "@/preview/preview-snap";
 import type { SelectedMaskPointSelection } from "@/selection/editor-selection";
-import type { Mask, MaskInteractionResult } from "@/masks/types";
+import type { Mask, MaskHandleId, MaskInteractionResult } from "@/masks/types";
 import type { MaskableElement } from "@/timeline";
+import { isMaskableElement } from "@/timeline/element-utils";
 import { registerCanceller } from "@/editor/cancel-interaction";
 
 interface DragState {
 	trackId: string;
 	elementId: string;
-	handleId: string;
+	handleId: MaskHandleId;
 	startCanvasX: number;
 	startCanvasY: number;
 	startParams: Mask["params"];
@@ -99,12 +96,12 @@ export function useMaskHandles({
 	const editor = useEditor();
 	const isShiftHeldRef = useShiftKey();
 	const viewport = usePreviewViewport();
-	const [activeHandleId, setActiveHandleId] = useState<string | null>(null);
+	const [activeHandleId, setActiveHandleId] = useState<MaskHandleId | null>(null);
 	const dragStateRef = useRef<DragState | null>(null);
 	const pendingSegmentInsertRef = useRef<PendingSegmentInsertState | null>(
 		null,
 	);
-	const captureRef = useRef<{ element: HTMLElement; pointerId: number } | null>(
+	const captureRef = useRef<{ element: Element; pointerId: number } | null>(
 		null,
 	);
 
@@ -137,7 +134,8 @@ export function useMaskHandles({
 							item.trackId === sel.trackId && item.elementId === sel.elementId,
 					);
 					if (!entry) return null;
-					const element = entry.element as MaskableElement;
+					if (!isMaskableElement(entry.element)) return null;
+					const element = entry.element;
 					const masks = element.masks ?? [];
 					if (masks.length === 0) return null;
 					const activeMaskId = masks.some((mask) =>
@@ -160,7 +158,7 @@ export function useMaskHandles({
 	const { handles: baseHandlePositions, overlays }: MaskInteractionResult =
 		selectedWithMask
 			? (() => {
-					const def = masksRegistry.get(selectedWithMask.mask.type);
+					const def = getMaskDefinition(selectedWithMask.mask.type);
 					const { x: scaleX, y: scaleY } = viewport.getDisplayScale();
 					const displayScale = (scaleX + scaleY) / 2;
 					return def.interaction.getInteraction({
@@ -186,30 +184,29 @@ export function useMaskHandles({
 	);
 
 	const handlePositions = baseHandlePositions.map((handle) => {
-		const parsedHandle = parseCustomMaskHandleId({ handleId: handle.id });
-		if (!parsedHandle || parsedHandle.part !== "anchor") {
+		if (handle.id.kind !== "anchor") {
 			return handle;
 		}
 		return {
 			...handle,
-			isSelected: selectedPointIds.has(parsedHandle.pointId),
+			isSelected: selectedPointIds.has(handle.id.pointId),
 		};
 	});
 
-	const customMaskPointIds =
-		selectedWithMask?.mask.type === "custom"
-			? handlePositions
-					.filter((h) => h.kind === "point")
-					.map((h) => {
-						const parsedHandle = parseCustomMaskHandleId({ handleId: h.id });
-						return parsedHandle?.part === "anchor"
-							? parsedHandle.pointId
-							: null;
-					})
-					.filter((id): id is string => id !== null)
-			: [];
-	const isCreatingCustomMask =
-		selectedWithMask?.mask.type === "custom" &&
+	const customMaskPointIds = useMemo(
+		() =>
+			selectedWithMask?.mask.type === "freeform"
+				? handlePositions
+						.filter((h) => h.kind === "point")
+						.map((h) => {
+							return h.id.kind === "anchor" ? h.id.pointId : null;
+						})
+						.filter((id): id is string => id !== null)
+				: [],
+		[handlePositions, selectedWithMask?.mask.type],
+	);
+	const isCreatingFreeformPathMask =
+		selectedWithMask?.mask.type === "freeform" &&
 		(!selectedWithMask.mask.params.closed || customMaskPointIds.length === 0);
 
 	useEffect(() => {
@@ -218,7 +215,7 @@ export function useMaskHandles({
 		}
 		if (
 			!selectedWithMask ||
-			selectedWithMask.mask.type !== "custom" ||
+			selectedWithMask.mask.type !== "freeform" ||
 			!isMaskSelectionForElement({
 				trackId: selectedWithMask.trackId,
 				elementId: selectedWithMask.elementId,
@@ -257,7 +254,7 @@ export function useMaskHandles({
 		selectedWithMask,
 	]);
 
-	const updateCustomMaskPointSelection = useCallback(
+	const updateFreeformPathMaskPointSelection = useCallback(
 		({
 			pointId,
 			toggleSelection,
@@ -265,7 +262,7 @@ export function useMaskHandles({
 			pointId: string;
 			toggleSelection: boolean;
 		}) => {
-			if (!selectedWithMask || selectedWithMask.mask.type !== "custom") {
+			if (!selectedWithMask || selectedWithMask.mask.type !== "freeform") {
 				return;
 			}
 
@@ -339,25 +336,32 @@ export function useMaskHandles({
 	]);
 
 	const handlePointerDown = useCallback(
-		({ event, handleId }: { event: React.PointerEvent; handleId: string }) => {
+		({
+			event,
+			handleId,
+		}: {
+			event: React.PointerEvent;
+			handleId: MaskHandleId;
+		}) => {
 			if (!selectedWithMask) return;
 			if (event.button !== 0) return;
 			event.stopPropagation();
-			const parsedHandle =
-				selectedWithMask.mask.type === "custom"
-					? parseCustomMaskHandleId({ handleId })
+			const anchorHandle =
+				selectedWithMask.mask.type === "freeform" && handleId.kind === "anchor"
+					? handleId
 					: null;
-			const parsedSegmentHandle =
-				selectedWithMask.mask.type === "custom"
-					? parseCustomMaskSegmentHandleId({ handleId })
+			const segmentHandle =
+				selectedWithMask.mask.type === "freeform" && handleId.kind === "segment"
+					? handleId
 					: null;
-			if (isCreatingCustomMask) {
+			if (isCreatingFreeformPathMask) {
 				const firstPointId = customMaskPointIds[0];
 				if (
 					firstPointId &&
-					handleId === `point:${firstPointId}:anchor` &&
+					handleId.kind === "anchor" &&
+					handleId.pointId === firstPointId &&
 					customMaskPointIds.length >= 3 &&
-					selectedWithMask.mask.type === "custom"
+					selectedWithMask.mask.type === "freeform"
 				) {
 					const updatedMask = withUpdatedMaskParams({
 						mask: selectedWithMask.mask,
@@ -390,13 +394,13 @@ export function useMaskHandles({
 			});
 			if (!pos) return;
 
-			if (parsedSegmentHandle && selectedWithMask.mask.type === "custom") {
+			if (segmentHandle && selectedWithMask.mask.type === "freeform") {
 				setActiveHandleId(handleId);
 				pendingSegmentInsertRef.current = {
 					trackId: selectedWithMask.trackId,
 					elementId: selectedWithMask.elementId,
 					maskId: selectedWithMask.mask.id,
-					segmentIndex: parsedSegmentHandle.segmentIndex,
+					segmentIndex: segmentHandle.index,
 					startClientX: event.clientX,
 					startClientY: event.clientY,
 					startCanvasX: pos.x,
@@ -404,7 +408,7 @@ export function useMaskHandles({
 					startParams: { ...selectedWithMask.mask.params },
 					bounds: selectedWithMask.bounds,
 				};
-				const captureTarget = event.currentTarget as HTMLElement;
+				const captureTarget = event.currentTarget;
 				captureTarget.setPointerCapture(event.pointerId);
 				captureRef.current = {
 					element: captureTarget,
@@ -413,15 +417,15 @@ export function useMaskHandles({
 				return;
 			}
 
-			if (parsedHandle?.part === "anchor") {
-				updateCustomMaskPointSelection({
-					pointId: parsedHandle.pointId,
+			if (anchorHandle) {
+				updateFreeformPathMaskPointSelection({
+					pointId: anchorHandle.pointId,
 					toggleSelection: event.shiftKey,
 				});
 				if (event.shiftKey) {
 					return;
 				}
-			} else if (selectedWithMask.mask.type === "custom") {
+			} else if (selectedWithMask.mask.type === "freeform") {
 				editor.selection.clearMaskPointSelection();
 			}
 
@@ -434,7 +438,7 @@ export function useMaskHandles({
 				startParams: { ...selectedWithMask.mask.params },
 			};
 			setActiveHandleId(handleId);
-			const captureTarget = event.currentTarget as HTMLElement;
+			const captureTarget = event.currentTarget;
 			captureTarget.setPointerCapture(event.pointerId);
 			captureRef.current = {
 				element: captureTarget,
@@ -445,22 +449,22 @@ export function useMaskHandles({
 			customMaskPointIds,
 			editor.selection,
 			editor.timeline,
-			isCreatingCustomMask,
+			isCreatingFreeformPathMask,
 			selectedWithMask,
-			updateCustomMaskPointSelection,
+			updateFreeformPathMaskPointSelection,
 			viewport,
 		],
 	);
 
 	const handleCanvasPointerDown = useCallback(
 		({ event }: { event: React.PointerEvent }) => {
-			if (!selectedWithMask || !isCreatingCustomMask) {
+			if (!selectedWithMask || !isCreatingFreeformPathMask) {
 				return;
 			}
 			if (event.button !== 0) {
 				return;
 			}
-			if (selectedWithMask.mask.type !== "custom") {
+			if (selectedWithMask.mask.type !== "freeform") {
 				return;
 			}
 
@@ -473,7 +477,7 @@ export function useMaskHandles({
 				return;
 			}
 
-			const nextParams = appendPointToCustomMask({
+			const nextParams = appendPointToFreeformPathMask({
 				params: selectedWithMask.mask.params,
 				canvasPoint: pos,
 				bounds: selectedWithMask.bounds,
@@ -498,7 +502,7 @@ export function useMaskHandles({
 				],
 			});
 		},
-		[editor.timeline, isCreatingCustomMask, selectedWithMask, viewport],
+		[editor.timeline, isCreatingFreeformPathMask, selectedWithMask, viewport],
 	);
 
 	const handlePointerMove = useCallback(
@@ -513,13 +517,13 @@ export function useMaskHandles({
 					dragStateRef.current = {
 						trackId: pendingSegmentInsert.trackId,
 						elementId: pendingSegmentInsert.elementId,
-						handleId: "position",
+						handleId: { kind: "position" },
 						startCanvasX: pendingSegmentInsert.startCanvasX,
 						startCanvasY: pendingSegmentInsert.startCanvasY,
 						startParams: pendingSegmentInsert.startParams,
 					};
 					pendingSegmentInsertRef.current = null;
-					setActiveHandleId("position");
+					setActiveHandleId({ kind: "position" });
 				}
 			}
 
@@ -534,7 +538,7 @@ export function useMaskHandles({
 
 			const deltaX = pos.x - drag.startCanvasX;
 			const deltaY = pos.y - drag.startCanvasY;
-			const def = masksRegistry.get(selectedWithMask.mask.type);
+			const def = getMaskDefinition(selectedWithMask.mask.type);
 
 			const rawParams = def.computeParamUpdate({
 				handleId: drag.handleId,
@@ -596,7 +600,7 @@ export function useMaskHandles({
 	const handlePointerUp = useCallback(() => {
 		const pendingSegmentInsert = pendingSegmentInsertRef.current;
 		if (pendingSegmentInsert && !dragStateRef.current) {
-			editor.timeline.insertCustomMaskPoint({
+			editor.timeline.insertFreeformPathMaskPoint({
 				trackId: pendingSegmentInsert.trackId,
 				elementId: pendingSegmentInsert.elementId,
 				maskId: pendingSegmentInsert.maskId,
@@ -623,7 +627,7 @@ export function useMaskHandles({
 		selectedWithMask,
 		handlePositions,
 		overlays,
-		isCreatingCustomMask,
+		isCreatingFreeformPathMask,
 		handleCanvasPointerDown,
 		activeHandleId,
 		handlePointerDown,

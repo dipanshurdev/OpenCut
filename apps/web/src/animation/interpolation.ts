@@ -1,20 +1,22 @@
 import type {
 	AnimationChannel,
 	AnimationInterpolation,
-	AnimationValue,
+	Channel,
 	DiscreteAnimationChannel,
 	DiscreteValue,
 	ScalarAnimationChannel,
 	ScalarAnimationKey,
 	ScalarSegmentType,
 } from "@/animation/types";
-import { clamp } from "@/utils/math";
+import type { ParamValue } from "@/params";
+import { mediaTime } from "@/wasm";
 import {
 	getBezierPoint,
 	getDefaultLeftHandle,
 	getDefaultRightHandle,
 	solveBezierProgressForTime,
 } from "./bezier";
+import { clamp } from "@/utils/math";
 
 function byTimeAscending({
 	leftTime,
@@ -63,9 +65,13 @@ function normalizeRightHandle({
 		return undefined;
 	}
 
-	const span = Math.max(1, rightKey.time - leftKey.time);
+	const span = mediaTime({
+		ticks: Math.max(1, rightKey.time - leftKey.time),
+	});
 	return {
-		dt: Math.min(span, Math.max(0, handle.dt)),
+		dt: mediaTime({
+			ticks: Math.min(span, Math.max(0, handle.dt)),
+		}),
 		dv: handle.dv,
 	};
 }
@@ -83,9 +89,13 @@ function normalizeLeftHandle({
 		return undefined;
 	}
 
-	const span = Math.max(1, rightKey.time - leftKey.time);
+	const span = mediaTime({
+		ticks: Math.max(1, rightKey.time - leftKey.time),
+	});
 	return {
-		dt: Math.max(-span, Math.min(0, handle.dt)),
+		dt: mediaTime({
+			ticks: Math.max(-span, Math.min(0, handle.dt)),
+		}),
 		dv: handle.dv,
 	};
 }
@@ -102,7 +112,7 @@ function normalizeScalarKey({
 	};
 }
 
-function normalizeScalarChannel({
+export function normalizeScalarChannel({
 	channel,
 }: {
 	channel: ScalarAnimationChannel;
@@ -145,17 +155,11 @@ function normalizeScalarChannel({
 	};
 }
 
-export function normalizeChannel<TChannel extends AnimationChannel>({
+export function normalizeDiscreteChannel({
 	channel,
 }: {
-	channel: TChannel;
-}): TChannel {
-	if (channel.kind === "scalar") {
-		return normalizeScalarChannel({
-			channel,
-		}) as TChannel;
-	}
-
+	channel: DiscreteAnimationChannel;
+}): DiscreteAnimationChannel {
 	return {
 		...channel,
 		keys: [...channel.keys].sort((leftKeyframe, rightKeyframe) =>
@@ -164,7 +168,39 @@ export function normalizeChannel<TChannel extends AnimationChannel>({
 				rightTime: rightKeyframe.time,
 			}),
 		),
-	} as TChannel;
+	};
+}
+
+export function isScalarChannel(channel: AnimationChannel): channel is ScalarAnimationChannel {
+	return (
+		"extrapolation" in channel ||
+		channel.keys.some((keyframe) => "segmentToNext" in keyframe)
+	);
+}
+
+export function normalizeChannel({
+	channel,
+}: {
+	channel: ScalarAnimationChannel;
+}): ScalarAnimationChannel;
+export function normalizeChannel({
+	channel,
+}: {
+	channel: DiscreteAnimationChannel;
+}): DiscreteAnimationChannel;
+export function normalizeChannel({
+	channel,
+}: {
+	channel: AnimationChannel;
+}): AnimationChannel;
+export function normalizeChannel({
+	channel,
+}: {
+	channel: AnimationChannel;
+}): AnimationChannel {
+	return isScalarChannel(channel)
+		? normalizeScalarChannel({ channel })
+		: normalizeDiscreteChannel({ channel });
 }
 
 function extrapolateScalarEdge({
@@ -207,7 +243,7 @@ export function getScalarChannelValueAtTime({
 	time,
 	fallbackValue,
 }: {
-	channel: ScalarAnimationChannel | undefined;
+	channel: Channel<number> | undefined;
 	time: number;
 	fallbackValue: number;
 }): number {
@@ -215,9 +251,7 @@ export function getScalarChannelValueAtTime({
 		return fallbackValue;
 	}
 
-	const normalizedChannel = normalizeChannel({
-		channel,
-	});
+	const normalizedChannel = normalizeScalarChannel({ channel });
 	const firstKey = normalizedChannel.keys[0];
 	const lastKey = normalizedChannel.keys[normalizedChannel.keys.length - 1];
 	if (!firstKey || !lastKey) {
@@ -319,7 +353,7 @@ export function getDiscreteChannelValueAtTime({
 	time,
 	fallbackValue,
 }: {
-	channel: DiscreteAnimationChannel | undefined;
+	channel: Channel<DiscreteValue> | undefined;
 	time: number;
 	fallbackValue: DiscreteValue;
 }): DiscreteValue {
@@ -327,9 +361,7 @@ export function getDiscreteChannelValueAtTime({
 		return fallbackValue;
 	}
 
-	const normalizedChannel = normalizeChannel({
-		channel,
-	});
+	const normalizedChannel = normalizeDiscreteChannel({ channel });
 	let currentValue = fallbackValue;
 	for (const key of normalizedChannel.keys) {
 		if (time < key.time) {
@@ -345,16 +377,34 @@ export function getChannelValueAtTime({
 	time,
 	fallbackValue,
 }: {
+	channel: Channel<number> | undefined;
+	time: number;
+	fallbackValue: number;
+}): number;
+export function getChannelValueAtTime<TValue extends DiscreteValue>({
+	channel,
+	time,
+	fallbackValue,
+}: {
+	channel: DiscreteAnimationChannel | undefined;
+	time: number;
+	fallbackValue: TValue;
+}): TValue;
+export function getChannelValueAtTime({
+	channel,
+	time,
+	fallbackValue,
+}: {
 	channel: AnimationChannel | undefined;
 	time: number;
-	fallbackValue: AnimationValue;
-}): AnimationValue {
+	fallbackValue: ParamValue;
+}): ParamValue {
 	if (!channel || channel.keys.length === 0) {
 		return fallbackValue;
 	}
 
-	if (channel.kind === "scalar") {
-		return typeof fallbackValue === "number"
+	if (typeof fallbackValue === "number") {
+		return isScalarChannel(channel)
 			? getScalarChannelValueAtTime({
 					channel,
 					time,
@@ -368,7 +418,7 @@ export function getChannelValueAtTime({
 	}
 
 	return getDiscreteChannelValueAtTime({
-		channel,
+		channel: isScalarChannel(channel) ? undefined : channel,
 		time,
 		fallbackValue,
 	});

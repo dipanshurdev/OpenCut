@@ -1,4 +1,6 @@
 import { getKeyframeById } from "@/animation";
+import { getChannelEntriesFromData } from "@/animation/channel-data";
+import { isScalarChannel } from "@/animation/interpolation";
 import type { SelectedKeyframeRef } from "@/animation/types";
 import type { TimelineElement } from "@/timeline";
 import { PasteKeyframesCommand } from "@/commands/timeline";
@@ -7,6 +9,7 @@ import type {
 	KeyframeClipboardCurvePatch,
 	KeyframeClipboardItem,
 } from "../types";
+import { roundMediaTime, subMediaTime, type MediaTime } from "@/wasm";
 
 function resolveSingleSourceElement({
 	selectedKeyframes,
@@ -40,14 +43,13 @@ function getCurvePatches({
 	propertyPath: KeyframeClipboardItem["propertyPath"];
 	keyframeId: string;
 }): KeyframeClipboardCurvePatch[] {
-	const binding = element.animations?.bindings[propertyPath];
-	if (!binding) {
+	const data = element.animations?.[propertyPath];
+	if (!data) {
 		return [];
 	}
 
-	return binding.components.flatMap((component) => {
-		const channel = element.animations?.channels[component.channelId];
-		if (channel?.kind !== "scalar") {
+	return getChannelEntriesFromData({ data }).flatMap(([componentKey, channel]) => {
+		if (!channel || !isScalarChannel(channel)) {
 			return [];
 		}
 
@@ -60,7 +62,7 @@ function getCurvePatches({
 
 		return [
 			{
-				componentKey: component.key,
+				componentKey,
 				patch: {
 					leftHandle: keyframe.leftHandle ?? null,
 					rightHandle: keyframe.rightHandle ?? null,
@@ -80,7 +82,7 @@ function buildClipboardItem({
 	element: TimelineElement;
 	propertyPath: KeyframeClipboardItem["propertyPath"];
 	keyframeId: string;
-}): (Omit<KeyframeClipboardItem, "timeOffset"> & { time: number }) | null {
+}): (Omit<KeyframeClipboardItem, "timeOffset"> & { time: MediaTime }) | null {
 	const keyframe = getKeyframeById({
 		animations: element.animations,
 		propertyPath,
@@ -136,10 +138,11 @@ export const KeyframesClipboardHandler = {
 		}
 
 		const minTime = Math.min(...rawItems.map((item) => item.time));
+		const minTimeMedia = roundMediaTime({ time: minTime });
 		const items = rawItems
 			.map(({ time, ...item }) => ({
 				...item,
-				timeOffset: time - minTime,
+				timeOffset: subMediaTime({ a: time, b: minTimeMedia }),
 			}))
 			.sort(
 				(left, right) =>
@@ -154,7 +157,10 @@ export const KeyframesClipboardHandler = {
 		};
 	},
 
-	paste(entry, { selectedElements, time }) {
+	paste({
+		entry,
+		context: { selectedElements, time },
+	}) {
 		const targetElement = selectedElements[0];
 		if (!targetElement || entry.items.length === 0) {
 			return null;

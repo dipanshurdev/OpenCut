@@ -1,13 +1,13 @@
 import type { Bookmark } from "@/timeline";
 import type { FrameRate } from "opencut-wasm";
-import { roundToFrame } from "opencut-wasm";
+import { addMediaTime, roundFrameTime, type MediaTime } from "@/wasm";
 
 function bookmarkTimeEqual({
 	bookmarkTime,
 	frameTime,
 }: {
-	bookmarkTime: number;
-	frameTime: number;
+	bookmarkTime: MediaTime;
+	frameTime: MediaTime;
 }): boolean {
 	return bookmarkTime === frameTime;
 }
@@ -17,7 +17,7 @@ export function findBookmarkIndex({
 	frameTime,
 }: {
 	bookmarks: Bookmark[];
-	frameTime: number;
+	frameTime: MediaTime;
 }): number {
 	return bookmarks.findIndex((bookmark) =>
 		bookmarkTimeEqual({ bookmarkTime: bookmark.time, frameTime }),
@@ -29,7 +29,7 @@ export function isBookmarkAtTime({
 	frameTime,
 }: {
 	bookmarks: Bookmark[];
-	frameTime: number;
+	frameTime: MediaTime;
 }): boolean {
 	return bookmarks.some((bookmark) =>
 		bookmarkTimeEqual({ bookmarkTime: bookmark.time, frameTime }),
@@ -41,7 +41,7 @@ export function toggleBookmarkInArray({
 	frameTime,
 }: {
 	bookmarks: Bookmark[];
-	frameTime: number;
+	frameTime: MediaTime;
 }): Bookmark[] {
 	const bookmarkIndex = findBookmarkIndex({ bookmarks, frameTime });
 
@@ -58,7 +58,7 @@ export function removeBookmarkFromArray({
 	frameTime,
 }: {
 	bookmarks: Bookmark[];
-	frameTime: number;
+	frameTime: MediaTime;
 }): Bookmark[] {
 	return bookmarks.filter(
 		(bookmark) =>
@@ -72,7 +72,7 @@ export function updateBookmarkInArray({
 	updates,
 }: {
 	bookmarks: Bookmark[];
-	frameTime: number;
+	frameTime: MediaTime;
 	updates: Partial<Omit<Bookmark, "time">>;
 }): Bookmark[] {
 	const index = findBookmarkIndex({ bookmarks, frameTime });
@@ -92,8 +92,8 @@ export function moveBookmarkInArray({
 	toTime,
 }: {
 	bookmarks: Bookmark[];
-	fromTime: number;
-	toTime: number;
+	fromTime: MediaTime;
+	toTime: MediaTime;
 }): Bookmark[] {
 	const index = findBookmarkIndex({ bookmarks, frameTime: fromTime });
 	if (index === -1) {
@@ -110,10 +110,10 @@ export function getFrameTime({
 	time,
 	fps,
 }: {
-	time: number;
+	time: MediaTime;
 	fps: FrameRate;
-}): number {
-	return roundToFrame({ time, rate: fps }) ?? time;
+}): MediaTime {
+	return roundFrameTime({ time, fps });
 }
 
 export function getBookmarkAtTime({
@@ -121,7 +121,7 @@ export function getBookmarkAtTime({
 	frameTime,
 }: {
 	bookmarks: Bookmark[];
-	frameTime: number;
+	frameTime: MediaTime;
 }): Bookmark | null {
 	const index = findBookmarkIndex({ bookmarks, frameTime });
 	return index === -1 ? null : bookmarks[index];
@@ -132,13 +132,13 @@ export function getBookmarksActiveAtTime({
 	time,
 }: {
 	bookmarks: Bookmark[];
-	time: number;
+	time: MediaTime;
 }): Bookmark[] {
 	return bookmarks.filter((bookmark) => {
 		const start = bookmark.time;
 		const end =
 			bookmark.duration != null && bookmark.duration > 0
-				? start + bookmark.duration
+				? addMediaTime({ a: start, b: bookmark.duration })
 				: start;
 		return time >= start && time <= end;
 	});

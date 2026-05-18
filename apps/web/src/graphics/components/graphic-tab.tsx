@@ -6,10 +6,9 @@ import {
 	useKeyframedParamProperty,
 	type KeyframedParamPropertyResult,
 } from "@/components/editor/panels/properties/hooks/use-keyframed-param-property";
-import { resolveGraphicParamsAtTime } from "@/animation";
 import type { ParamDefinition, ParamValues } from "@/params";
 import type { GraphicElement } from "@/timeline";
-import { graphicsRegistry, registerDefaultGraphics } from "@/graphics";
+import { graphicsRegistry, registerDefaultGraphics, resolveGraphicElementParamsAtTime } from "@/graphics";
 import { useElementPreview } from "@/timeline/hooks/use-element-preview";
 import { useEditor } from "@/editor/use-editor";
 import {
@@ -24,6 +23,7 @@ import { Button } from "@/components/ui/button";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { MinusSignIcon, PlusSignIcon } from "@hugeicons/core-free-icons";
 import { cn } from "@/utils/ui";
+import type { MediaTime } from "@/wasm";
 
 registerDefaultGraphics();
 
@@ -48,7 +48,7 @@ export function GraphicTab({
 	});
 
 	const liveElement = renderElement as GraphicElement;
-	const resolvedParams = resolveGraphicParamsAtTime({
+	const resolvedParams = resolveGraphicElementParamsAtTime({
 		element: liveElement,
 		localTime,
 	});
@@ -103,7 +103,7 @@ function StrokeSection({
 	});
 
 	const liveElement = renderElement as GraphicElement;
-	const resolvedParams = resolveGraphicParamsAtTime({
+	const resolvedParams = resolveGraphicElementParamsAtTime({
 		element: liveElement,
 		localTime,
 	});
@@ -197,10 +197,11 @@ function AnimatedGraphicParamField({
 	isPlayheadWithinElementRange,
 	resolvedParams,
 }: {
+	key?: string;
 	param: ParamDefinition;
 	trackId: string;
 	element: GraphicElement;
-	localTime: number;
+	localTime: MediaTime;
 	isPlayheadWithinElementRange: boolean;
 	resolvedParams: ParamValues;
 }) {

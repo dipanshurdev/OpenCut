@@ -2,16 +2,17 @@ import type { EditorCore } from "@/core";
 import type {
 	AnimationInterpolation,
 	AnimationPath,
-	AnimationValue,
 	ScalarCurveKeyframePatch,
 	SelectedKeyframeRef,
 } from "@/animation/types";
+import type { ParamValue } from "@/params";
 import type { Command } from "@/commands/base-command";
 import type {
 	CreateTimelineElement,
 	ElementRef,
 	TrackType,
 } from "@/timeline";
+import type { MediaTime } from "@/wasm";
 
 export interface ElementClipboardItem {
 	trackId: string;
@@ -26,8 +27,8 @@ export interface KeyframeClipboardCurvePatch {
 
 export interface KeyframeClipboardItem {
 	propertyPath: AnimationPath;
-	timeOffset: number;
-	value: AnimationValue;
+	timeOffset: MediaTime;
+	value: ParamValue;
 	interpolation: AnimationInterpolation;
 	curvePatches: KeyframeClipboardCurvePatch[];
 }
@@ -61,17 +62,17 @@ export interface PasteContext {
 	editor: EditorCore;
 	selectedElements: ElementRef[];
 	selectedKeyframes: SelectedKeyframeRef[];
-	time: number;
+	time: MediaTime;
 }
 
 export interface ClipboardHandler<TType extends ClipboardEntryType> {
 	type: TType;
 	canCopy(context: CopyContext): boolean;
 	copy(context: CopyContext): ClipboardEntryByType[TType] | null;
-	paste(
-		entry: ClipboardEntryByType[TType],
-		context: PasteContext,
-	): Command | null;
+	paste(args: {
+		entry: ClipboardEntryByType[TType];
+		context: PasteContext;
+	}): Command | null;
 }
 
 export type ClipboardHandlerMap = {

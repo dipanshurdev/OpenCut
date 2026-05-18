@@ -3,16 +3,25 @@ import { EditorCore } from "@/core";
 import type { TScene } from "@/timeline";
 import { updateSceneInArray } from "@/timeline/scenes";
 import { getFrameTime, moveBookmarkInArray } from "@/timeline/bookmarks/index";
+import type { MediaTime } from "@/wasm";
 
 export class MoveBookmarkCommand extends Command {
 	private savedScenes: TScene[] | null = null;
 
-	constructor(
-		private fromTime: number,
-		private toTime: number,
-	) {
+	constructor({
+		fromTime,
+		toTime,
+	}: {
+		fromTime: MediaTime;
+		toTime: MediaTime;
+	}) {
 		super();
+		this.fromTime = fromTime;
+		this.toTime = toTime;
 	}
+
+	private fromTime: MediaTime;
+	private toTime: MediaTime;
 
 	execute(): CommandResult | undefined {
 		const editor = EditorCore.getInstance();

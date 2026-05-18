@@ -2,7 +2,7 @@ import type { ElementAnimations } from "@/animation/types";
 import type { Effect } from "@/effects/types";
 import type { Mask } from "@/masks/types";
 import type { ParamValues } from "@/params";
-import type { BlendMode, Transform } from "@/rendering";
+import type { MediaTime } from "@/wasm";
 
 export type ElementRef = {
 	trackId: string;
@@ -10,10 +10,10 @@ export type ElementRef = {
 };
 
 export interface Bookmark {
-	time: number;
+	time: MediaTime;
 	note?: string;
 	color?: string;
-	duration?: number;
+	duration?: MediaTime;
 }
 
 export interface TScene {
@@ -86,8 +86,6 @@ export interface RetimeConfig {
 
 interface BaseAudioElement extends BaseTimelineElement {
 	type: "audio";
-	volume: number;
-	muted?: boolean;
 	buffer?: AudioBuffer;
 	retime?: RetimeConfig;
 }
@@ -107,25 +105,21 @@ export type AudioElement = UploadAudioElement | LibraryAudioElement;
 interface BaseTimelineElement {
 	id: string;
 	name: string;
-	duration: number;
-	startTime: number;
-	trimStart: number;
-	trimEnd: number;
-	sourceDuration?: number;
+	duration: MediaTime;
+	startTime: MediaTime;
+	trimStart: MediaTime;
+	trimEnd: MediaTime;
+	sourceDuration?: MediaTime;
 	animations?: ElementAnimations;
+	params: ParamValues;
 }
 
 export interface VideoElement extends BaseTimelineElement {
 	type: "video";
 	mediaId: string;
-	volume?: number;
-	muted?: boolean;
 	isSourceAudioEnabled?: boolean;
 	hidden?: boolean;
 	retime?: RetimeConfig;
-	transform: Transform;
-	opacity: number;
-	blendMode?: BlendMode;
 	effects?: Effect[];
 	masks?: Mask[];
 }
@@ -134,40 +128,13 @@ export interface ImageElement extends BaseTimelineElement {
 	type: "image";
 	mediaId: string;
 	hidden?: boolean;
-	transform: Transform;
-	opacity: number;
-	blendMode?: BlendMode;
 	effects?: Effect[];
 	masks?: Mask[];
 }
 
-export interface TextBackground {
-	enabled: boolean;
-	color: string;
-	cornerRadius?: number;
-	paddingX?: number;
-	paddingY?: number;
-	offsetX?: number;
-	offsetY?: number;
-}
-
 export interface TextElement extends BaseTimelineElement {
 	type: "text";
-	content: string;
-	fontSize: number;
-	fontFamily: string;
-	color: string;
-	background: TextBackground;
-	textAlign: "left" | "center" | "right";
-	fontWeight: "normal" | "bold";
-	fontStyle: "normal" | "italic";
-	textDecoration: "none" | "underline" | "line-through";
-	letterSpacing?: number;
-	lineHeight?: number;
 	hidden?: boolean;
-	transform: Transform;
-	opacity: number;
-	blendMode?: BlendMode;
 	effects?: Effect[];
 }
 
@@ -178,20 +145,13 @@ export interface StickerElement extends BaseTimelineElement {
 	intrinsicWidth?: number;
 	intrinsicHeight?: number;
 	hidden?: boolean;
-	transform: Transform;
-	opacity: number;
-	blendMode?: BlendMode;
 	effects?: Effect[];
 }
 
 export interface GraphicElement extends BaseTimelineElement {
 	type: "graphic";
 	definitionId: string;
-	params: ParamValues;
 	hidden?: boolean;
-	transform: Transform;
-	opacity: number;
-	blendMode?: BlendMode;
 	effects?: Effect[];
 	masks?: Mask[];
 }
@@ -199,13 +159,9 @@ export interface GraphicElement extends BaseTimelineElement {
 export interface EffectElement extends BaseTimelineElement {
 	type: "effect";
 	effectType: string;
-	params: ParamValues;
 }
 
-export type ElementUpdatePatch =
-	| { transform: Transform }
-	| { opacity: number }
-	| { volume: number };
+export type ElementUpdatePatch = { params?: Partial<ParamValues> };
 
 export type TimelineElement =
 	| AudioElement
@@ -273,21 +229,38 @@ export interface ElementDragState {
 	isDragging: boolean;
 	elementId: string | null;
 	dragElementIds: string[];
-	dragTimeOffsets: Record<string, number>;
+	dragTimeOffsets: Record<string, MediaTime>;
 	trackId: string | null;
 	startMouseX: number;
 	startMouseY: number;
-	startElementTime: number;
-	clickOffsetTime: number;
-	currentTime: number;
+	startElementTime: MediaTime;
+	clickOffsetTime: MediaTime;
+	currentTime: MediaTime;
 	currentMouseY: number;
 }
+
+export type ElementDragView =
+	| { readonly kind: "idle" }
+	| {
+			readonly kind: "dragging";
+			readonly anchorElementId: string;
+			readonly trackId: string;
+			readonly memberTimeOffsets: ReadonlyMap<string, MediaTime>;
+			readonly startMouseX: number;
+			readonly startMouseY: number;
+			readonly startElementTime: MediaTime;
+			readonly clickOffsetTime: MediaTime;
+			readonly currentTime: MediaTime;
+			readonly currentMouseX: number;
+			readonly currentMouseY: number;
+			readonly dropTarget: DropTarget | null;
+	  };
 
 export interface DropTarget {
 	trackIndex: number;
 	isNewTrack: boolean;
 	insertPosition: "above" | "below" | null;
-	xPosition: number;
+	xPosition: MediaTime;
 	targetElement: { elementId: string; trackId: string } | null;
 }
 
@@ -296,13 +269,13 @@ export interface ComputeDropTargetParams {
 	mouseX: number;
 	mouseY: number;
 	tracks: SceneTracks;
-	playheadTime: number;
+	playheadTime: MediaTime;
 	isExternalDrop: boolean;
-	elementDuration: number;
+	elementDuration: MediaTime;
 	pixelsPerSecond: number;
 	zoomLevel: number;
 	verticalDragDirection?: "up" | "down" | null;
-	startTimeOverride?: number;
+	startTimeOverride?: MediaTime;
 	excludeElementId?: string;
 	targetElementTypes?: string[];
 }

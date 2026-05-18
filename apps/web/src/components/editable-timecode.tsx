@@ -1,15 +1,24 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { formatTimecode, parseTimecode, snappedSeekTime, type FrameRate, type TimeCodeFormat } from "opencut-wasm";
+import {
+	formatTimecode,
+	type FrameRate,
+	type TimeCodeFormat,
+} from "opencut-wasm";
 import { cn } from "@/utils/ui";
+import {
+	parseMediaTimecode,
+	snapSeekMediaTime,
+	type MediaTime,
+} from "@/wasm";
 
 interface EditableTimecodeProps {
-	time: number;
-	duration: number;
+	time: MediaTime;
+	duration: MediaTime;
 	format?: TimeCodeFormat;
 	fps: FrameRate;
-	onTimeChange?: ({ time }: { time: number }) => void;
+	onTimeChange?: ({ time }: { time: MediaTime }) => void;
 	className?: string;
 	disabled?: boolean;
 }
@@ -46,7 +55,11 @@ export function EditableTimecode({
 	};
 
 	const applyEdit = () => {
-		const parsedTime = parseTimecode({ timeCode: inputValue, format, rate: fps });
+		const parsedTime = parseMediaTimecode({
+			timeCode: inputValue,
+			format,
+			fps,
+		});
 
 		if (parsedTime == null) {
 			setHasError(true);
@@ -54,7 +67,7 @@ export function EditableTimecode({
 		}
 
 		const clampedTime = duration
-			? (snappedSeekTime({ time: parsedTime, duration, rate: fps }) ?? parsedTime)
+			? snapSeekMediaTime({ time: parsedTime, duration, fps })
 			: parsedTime;
 
 		onTimeChange?.({ time: clampedTime });

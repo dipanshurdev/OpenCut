@@ -1,14 +1,14 @@
 import type { ElementBounds } from "@/preview/element-bounds";
 import type { SnapLine } from "@/preview/preview-snap";
 import type { ParamDefinition } from "@/params";
-import type { CustomMaskPathPoint } from "@/masks/custom-path";
+import type { FreeformPathPoint } from "@/masks/freeform/path";
 import type {
 	TextDecoration,
 	TextFontStyle,
 	TextFontWeight,
 } from "@/text/primitives";
 
-export type MaskType =
+export type BuiltinMaskType =
 	| "split"
 	| "cinematic-bars"
 	| "rectangle"
@@ -16,8 +16,9 @@ export type MaskType =
 	| "heart"
 	| "diamond"
 	| "star"
-	| "text"
-	| "custom";
+	| "text";
+
+export type MaskType = BuiltinMaskType | "freeform";
 
 export interface BaseMaskParams {
 	feather: number;
@@ -57,8 +58,8 @@ export interface TextMaskParams extends BaseMaskParams {
 	scale: number;
 }
 
-export interface CustomMaskParams extends BaseMaskParams {
-	path: CustomMaskPathPoint[];
+export interface FreeformPathMaskParams extends BaseMaskParams {
+	path: FreeformPathPoint[];
 	closed: boolean;
 	centerX: number;
 	centerY: number;
@@ -114,13 +115,7 @@ export interface TextMask {
 	params: TextMaskParams;
 }
 
-export interface CustomMask {
-	id: string;
-	type: "custom";
-	params: CustomMaskParams;
-}
-
-export type Mask =
+export type BuiltinShapeMask =
 	| SplitMask
 	| CinematicBarsMask
 	| RectangleMask
@@ -128,35 +123,60 @@ export type Mask =
 	| HeartMask
 	| DiamondMask
 	| StarMask
-	| TextMask
-	| CustomMask;
+	| TextMask;
 
-export interface MaskRenderer {
-	buildPath?: (params: {
-		resolvedParams: unknown;
-		width: number;
-		height: number;
-	}) => Path2D;
-	buildStrokePath?: (params: {
-		resolvedParams: unknown;
-		width: number;
-		height: number;
-	}) => Path2D;
-	/** Renders the feathered mask directly onto ctx, bypassing JFA. */
-	renderMask?: (params: {
-		resolvedParams: unknown;
-		ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
-		width: number;
-		height: number;
-		feather: number;
-	}) => void;
-	renderMaskHandlesFeather?: boolean;
-	renderStroke?: (params: {
-		resolvedParams: unknown;
-		ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
-		width: number;
-		height: number;
-	}) => void;
+export interface FreeformPathMask {
+	id: string;
+	type: "freeform";
+	params: FreeformPathMaskParams;
+}
+
+export type Mask = BuiltinShapeMask | FreeformPathMask;
+
+export type MaskByType<TType extends MaskType> = Extract<Mask, { type: TType }>;
+export type MaskParamsByType<TType extends MaskType> =
+	MaskByType<TType>["params"];
+
+type MaskPathArgs<TParams extends BaseMaskParams> = {
+	resolvedParams: TParams;
+	width: number;
+	height: number;
+};
+
+type MaskDrawArgs<TParams extends BaseMaskParams> = MaskPathArgs<TParams> & {
+	ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
+};
+
+export type MaskBody<TParams extends BaseMaskParams = BaseMaskParams> =
+	| {
+			kind: "fillPath";
+			buildPath(args: MaskPathArgs<TParams>): Path2D;
+	  }
+	| {
+			kind: "drawOpaque";
+			drawOpaque(args: MaskDrawArgs<TParams>): void;
+	  }
+	| {
+			kind: "drawWithFeather";
+			drawWithFeather(args: MaskDrawArgs<TParams> & { feather: number }): void;
+			opaqueFastPath?: {
+				buildPath(args: MaskPathArgs<TParams>): Path2D;
+			};
+	  };
+
+export type MaskStroke<TParams extends BaseMaskParams = BaseMaskParams> =
+	| {
+			kind: "strokeFromPath";
+			buildStrokePath(args: MaskPathArgs<TParams>): Path2D;
+	  }
+	| {
+			kind: "renderStroke";
+			renderStroke(args: MaskDrawArgs<TParams>): void;
+	  };
+
+export interface MaskRenderer<TParams extends BaseMaskParams = BaseMaskParams> {
+	body: MaskBody<TParams>;
+	stroke?: MaskStroke<TParams>;
 }
 
 export interface MaskFeatures {
@@ -167,10 +187,41 @@ export interface MaskFeatures {
 
 export type MaskHandleIcon = "rotate" | "feather";
 
-export type MaskHandleKind = "corner" | "edge" | "icon" | "point" | "tangent";
+export type MaskHandleKind = "corner" | "edge" | "icon" | "point";
+
+type Side = "left" | "right" | "top" | "bottom";
+type CornerXY = { x: "left" | "right"; y: "top" | "bottom" };
+
+export type MaskHandleId =
+	| { kind: "position" }
+	| { kind: "rotation" }
+	| { kind: "feather" }
+	| { kind: "scale" }
+	| { kind: "edge"; side: Side }
+	| { kind: "corner"; corner: CornerXY }
+	| { kind: "anchor"; pointId: string }
+	| { kind: "segment"; index: number };
+
+export function maskHandleIdKey({ id }: { id: MaskHandleId }): string {
+	switch (id.kind) {
+		case "position":
+		case "rotation":
+		case "feather":
+		case "scale":
+			return id.kind;
+		case "edge":
+			return id.side;
+		case "corner":
+			return `${id.corner.y}-${id.corner.x}`;
+		case "anchor":
+			return `point:${id.pointId}:anchor`;
+		case "segment":
+			return `segment:${id.index}`;
+	}
+}
 
 export interface MaskHandlePosition {
-	id: string;
+	id: MaskHandleId;
 	x: number;
 	y: number;
 	cursor: string;
@@ -187,7 +238,7 @@ export interface MaskLineOverlay {
 	start: { x: number; y: number };
 	end: { x: number; y: number };
 	cursor?: string;
-	handleId?: string;
+	handleId?: MaskHandleId;
 }
 
 export interface MaskRectOverlay {
@@ -199,7 +250,7 @@ export interface MaskRectOverlay {
 	rotation: number;
 	dashed?: boolean;
 	cursor?: string;
-	handleId?: string;
+	handleId?: MaskHandleId;
 }
 
 export interface MaskShapeOverlay {
@@ -211,7 +262,7 @@ export interface MaskShapeOverlay {
 	rotation: number;
 	pathData: string;
 	cursor?: string;
-	handleId?: string;
+	handleId?: MaskHandleId;
 }
 
 export interface MaskCanvasPathOverlay {
@@ -220,7 +271,7 @@ export interface MaskCanvasPathOverlay {
 	pathData: string;
 	coordinateSpace?: "canvas" | "overlay";
 	cursor?: string;
-	handleId?: string;
+	handleId?: MaskHandleId;
 	strokeWidth?: number;
 	strokeOpacity?: number;
 }
@@ -238,7 +289,7 @@ export interface MaskDefaultContext {
 export interface MaskParamUpdateArgs<
 	TParams extends BaseMaskParams = BaseMaskParams,
 > {
-	handleId: string;
+	handleId: MaskHandleId;
 	startParams: TParams;
 	deltaX: number;
 	deltaY: number;
@@ -249,7 +300,7 @@ export interface MaskParamUpdateArgs<
 }
 
 export interface MaskSnapArgs<TParams extends BaseMaskParams = BaseMaskParams> {
-	handleId: string;
+	handleId: MaskHandleId;
 	startParams: TParams;
 	proposedParams: TParams;
 	bounds: ElementBounds;
@@ -282,17 +333,17 @@ export interface MaskInteractionDefinition<
 	snap?(args: MaskSnapArgs<TParams>): MaskSnapResult<TParams>;
 }
 
-export interface MaskDefinition<
-	TParams extends BaseMaskParams = BaseMaskParams,
-> {
-	type: MaskType;
+export interface MaskDefinition<TType extends MaskType = MaskType> {
+	type: TType;
 	name: string;
 	features: MaskFeatures;
-	params: ParamDefinition<keyof TParams & string>[];
-	renderer: MaskRenderer;
-	interaction: MaskInteractionDefinition<TParams>;
+	params: ParamDefinition<keyof MaskParamsByType<TType> & string>[];
+	renderer: MaskRenderer<MaskParamsByType<TType>>;
+	interaction: MaskInteractionDefinition<MaskParamsByType<TType>>;
 	/** When defined and returning false, the mask is not applied and the element renders fully visible. */
-	isActive?: (params: TParams) => boolean;
-	buildDefault(context: MaskDefaultContext): Omit<Mask, "id">;
-	computeParamUpdate(args: MaskParamUpdateArgs<TParams>): Partial<TParams>;
+	isActive?(params: MaskParamsByType<TType>): boolean;
+	buildDefault(context: MaskDefaultContext): Omit<MaskByType<TType>, "id">;
+	computeParamUpdate(
+		args: MaskParamUpdateArgs<MaskParamsByType<TType>>,
+	): Partial<MaskParamsByType<TType>>;
 }

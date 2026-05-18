@@ -18,6 +18,7 @@ import {
 	resolveTrackPlacement,
 	validateElementTrackCompatibility,
 } from "@/timeline/placement";
+import { roundMediaTime } from "@/wasm";
 
 type InsertElementPlacement =
 	| { mode: "explicit"; trackId: string }
@@ -188,7 +189,7 @@ export class InsertElementCommand extends Command {
 			}
 		}
 
-		if (element.type === "text" && !element.content) {
+		if (element.type === "text" && !element.params.content) {
 			console.error("Text element must have content");
 			return false;
 		}
@@ -266,7 +267,12 @@ export class InsertElementCommand extends Command {
 			placementResult.kind === "existingTrack"
 				? {
 						...element,
-						startTime: placementResult.adjustedStartTime ?? element.startTime,
+						startTime:
+							placementResult.adjustedStartTime !== undefined
+								? roundMediaTime({
+										time: placementResult.adjustedStartTime,
+									})
+								: element.startTime,
 					}
 				: element;
 

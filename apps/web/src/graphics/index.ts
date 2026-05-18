@@ -1,3 +1,5 @@
+import { resolveGraphicParamsAtTime } from "@/animation";
+import type { ElementAnimations } from "@/animation/types";
 import { buildDefaultParamValues } from "@/params/registry";
 import type { ParamValues } from "@/params";
 import { graphicsRegistry } from "./registry";
@@ -58,14 +60,42 @@ export function buildDefaultGraphicInstance({
 	};
 }
 
-export function resolveGraphicParams(
-	definition: GraphicDefinition,
-	params?: ParamValues,
-): ParamValues {
+export function resolveGraphicParams({
+	definition,
+	params,
+}: {
+	definition: GraphicDefinition;
+	params?: ParamValues;
+}): ParamValues {
 	return {
 		...buildDefaultParamValues(definition.params),
 		...(params ?? {}),
 	};
+}
+
+export function resolveGraphicElementParamsAtTime({
+	element,
+	localTime,
+}: {
+	element: {
+		definitionId: string;
+		params: ParamValues;
+		animations?: ElementAnimations;
+	};
+	localTime: number;
+}): ParamValues {
+	const definition = getGraphicDefinition({
+		definitionId: element.definitionId,
+	});
+	return resolveGraphicParamsAtTime({
+		params: resolveGraphicParams({
+			definition,
+			params: element.params,
+		}),
+		definitions: definition.params,
+		animations: element.animations,
+		localTime,
+	});
 }
 
 export function buildGraphicPreviewUrl({
@@ -78,7 +108,7 @@ export function buildGraphicPreviewUrl({
 	size?: number;
 }): string {
 	const definition = getGraphicDefinition({ definitionId });
-	const resolvedParams = resolveGraphicParams(definition, params);
+	const resolvedParams = resolveGraphicParams({ definition, params });
 	const cacheKey = JSON.stringify({ definitionId, resolvedParams, size });
 	const cachedUrl = graphicPreviewUrlCache.get(cacheKey);
 	if (cachedUrl) {

@@ -1,5 +1,5 @@
 import { hasKeyframesForPath } from "@/animation/keyframe-query";
-import { resolveNumberAtTime } from "@/animation/resolve";
+import { resolveNumberAtTime } from "@/animation/values";
 import { VOLUME_DB_MAX, VOLUME_DB_MIN } from "./audio-constants";
 import type { TimelineElement } from "./types";
 const DEFAULT_STEP_SECONDS = 1 / 60;
@@ -19,6 +19,23 @@ export function clampDb(value: number): number {
 
 export function dBToLinear(db: number): number {
 	return 10 ** (clampDb(db) / 20);
+}
+
+export function getElementVolume({
+	element,
+}: {
+	element: AudioCapableElement;
+}): number {
+	const value = element.params.volume;
+	return typeof value === "number" ? value : 0;
+}
+
+export function isElementMuted({
+	element,
+}: {
+	element: AudioCapableElement;
+}): boolean {
+	return element.params.muted === true;
 }
 
 export function hasAnimatedVolume({
@@ -43,12 +60,12 @@ export function resolveEffectiveAudioGain({
 	trackMuted?: boolean;
 	localTime: number;
 }): number {
-	if (trackMuted || element.muted === true) {
+	if (trackMuted || isElementMuted({ element })) {
 		return 0;
 	}
 
 	const resolvedDb = resolveNumberAtTime({
-		baseValue: element.volume ?? 0,
+		baseValue: getElementVolume({ element }),
 		animations: element.animations,
 		propertyPath: "volume",
 		localTime: Math.round(localTime * TICKS_PER_SECOND),

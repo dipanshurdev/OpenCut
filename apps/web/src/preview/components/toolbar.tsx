@@ -4,16 +4,15 @@ import { useState, useEffect } from "react";
 import { useEditor } from "@/editor/use-editor";
 import { formatTimecode } from "opencut-wasm";
 import { invokeAction } from "@/actions";
+import { useKeyboardShortcutsHelp } from "@/actions/use-keyboard-shortcuts-help";
 import { EditableTimecode } from "@/components/editable-timecode";
 import { Button } from "@/components/ui/button";
 import {
 	FullScreenIcon,
-	GridTableIcon,
 	PauseIcon,
 	PlayIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { getGuideById } from "@/guides";
 import { Separator } from "@/components/ui/separator";
 import {
 	Select,
@@ -26,15 +25,18 @@ import { PREVIEW_ZOOM_PRESETS } from "@/preview/zoom";
 import { usePreviewViewport } from "./preview-viewport";
 import { GridPopover } from "./guide-popover";
 import { usePreviewStore } from "@/preview/preview-store";
+import {
+	Tooltip,
+	TooltipTrigger,
+	TooltipContent,
+} from "@/components/ui/tooltip";
+import type { MediaTime } from "@/wasm";
 
 export function PreviewToolbar({
 	onToggleFullscreen,
 }: {
 	onToggleFullscreen: () => void;
 }) {
-	const activeGuide = usePreviewStore((state) => state.activeGuide);
-	const activeGuideDefinition = getGuideById(activeGuide);
-
 	return (
 		<div className="grid grid-cols-[1fr_auto_1fr] items-center pb-3 pt-5 px-5">
 			<TimecodeDisplay />
@@ -67,20 +69,18 @@ function TimecodeDisplay() {
 	const editor = useEditor();
 	const totalDuration = useEditor((e) => e.timeline.getTotalDuration());
 	const fps = useEditor((e) => e.project.getActive().settings.fps);
-	const [currentTime, setCurrentTime] = useState(() =>
+	const [currentTime, setCurrentTime] = useState<MediaTime>(() =>
 		editor.playback.getCurrentTime(),
 	);
 
 	useEffect(() => {
-		const handler = (e: Event) =>
-			setCurrentTime((e as CustomEvent<{ time: number }>).detail.time);
-		window.addEventListener("playback-update", handler);
-		window.addEventListener("playback-seek", handler);
+		const unsubscribeUpdate = editor.playback.onUpdate(setCurrentTime);
+		const unsubscribeSeek = editor.playback.onSeek(setCurrentTime);
 		return () => {
-			window.removeEventListener("playback-update", handler);
-			window.removeEventListener("playback-seek", handler);
+			unsubscribeUpdate();
+			unsubscribeSeek();
 		};
-	}, []);
+	}, [editor.playback]);
 
 	return (
 		<div className="flex items-center">
@@ -94,7 +94,11 @@ function TimecodeDisplay() {
 			/>
 			<span className="text-muted-foreground px-2 font-mono text-xs">/</span>
 			<span className="text-muted-foreground font-mono text-xs">
-				{formatTimecode({ time: totalDuration, format: "HH:MM:SS:FF", rate: fps })}
+				{formatTimecode({
+					time: totalDuration,
+					format: "HH:MM:SS:FF",
+					rate: fps,
+				})}
 			</span>
 		</div>
 	);
@@ -135,14 +139,24 @@ function ZoomSelect() {
 
 function PlayPauseButton() {
 	const isPlaying = useEditor((e) => e.playback.getIsPlaying());
+	const { shortcuts } = useKeyboardShortcutsHelp();
+	const shortcut = shortcuts.find((s) => s.action === "toggle-play");
+	const tooltipText = shortcut
+		? `Play/Pause (${shortcut.keys.join(" or ")})`
+		: "Play/Pause";
 
 	return (
-		<Button
-			variant="text"
-			size="icon"
-			onClick={() => invokeAction("toggle-play")}
-		>
-			<HugeiconsIcon icon={isPlaying ? PauseIcon : PlayIcon} />
-		</Button>
+		<Tooltip delayDuration={200}>
+			<TooltipTrigger asChild>
+				<Button
+					variant="text"
+					size="icon"
+					onClick={() => invokeAction("toggle-play")}
+				>
+					<HugeiconsIcon icon={isPlaying ? PauseIcon : PlayIcon} />
+				</Button>
+			</TooltipTrigger>
+			<TooltipContent>{tooltipText}</TooltipContent>
+		</Tooltip>
 	);
 }
